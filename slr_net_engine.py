@@ -1,35 +1,50 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
 """
-SLR-Net (Sparse Latent-Reasoning Network) — Эталонная архитектура и конвейер обучения.
-=======================================================================================
+SLR-Net (Sparse Latent-Reasoning Network) — эталонная архитектура языковой модели.
+==================================================================================
 
-Архитектурный синтез пяти энергоэффективных нейросетевых парадигм:
-1. BitNet b1.58 (Ma et al., arXiv:2402.17764):
-   Троичные синаптические веса {-1, 0, +1} со Straight-Through Estimator (STE).
-   Заменяет умножение чисел с плавающей запятой (FP16) на целочисленное сложение/вычитание.
-2. Mamba Selective SSM (Gu & Dao, arXiv:2312.00752):
-   Линейное сжатие контекста со сложностью O(1) по памяти на шаг генерации (без роста KV-кэша).
-3. Memory Layers at Scale / RETRO (Berges et al., arXiv:2412.09764; Borgeaud et al., arXiv:2112.04426):
-   Отделение «когнитивного ядра» (грамматика и логика) от внешней индексированной памяти фактов.
-4. Mixture-of-Depths (Raposo et al., arXiv:2404.02258):
-   Динамический маршрутизатор глубины, пропускающий простые токены (союзы, предлоги, связки) мимо
-   тяжёлых вычислительных блоков.
-5. Coconut — Chain of Continuous Thought (Hao et al., arXiv:2412.06769):
-   Скрытый рекуррентный цикл рассуждений прямо в непрерывном векторном пространстве (System 2)
-   с переиспользованием весов вместо генерации сотен промежуточных текстовых токенов.
+Что внутри (и откуда идеи):
+
+1. Троичные веса BitNet b1.58 (Ma et al., arXiv:2402.17764; BitNet b1.58 2B4T, arXiv:2504.12285).
+   Веса линейных слоёв квантуются в {-1, 0, +1} * gamma, активации — в int8. Обучение идёт через
+   Straight-Through Estimator (STE): в прямом проходе используются квантованные веса, градиент
+   передаётся мастер-весам как есть. Экономия: ~1.58 бита на вес вместо 16.
+
+2. Mamba-2 / SSD (Dao & Gu, arXiv:2405.21060) вместо Mamba-1.
+   Состояние контекста фиксированного размера (нет растущего KV-кэша), а обучение считается
+   блочными матричными умножениями («chunked scan»), а не питоновским циклом по токенам.
+
+3. Локальное скользящее внимание (Sliding Window Attention) с RoPE и GQA — как в гибридах
+   Samba (arXiv:2406.07522) / Jamba (arXiv:2403.19887). Окно W: память на внимание O(W), а не O(L).
+
+4. Рекуррентное «ядро мышления» с общими весами (recurrent depth: Universal Transformers,
+   arXiv:1807.03819; Geiping et al., arXiv:2502.05171) и маршрутизацией токенов по глубине в стиле
+   Mixture-of-Depths (arXiv:2404.02258) / Mixture-of-Recursions (arXiv:2507.10524):
+   на каждом шаге мышления роутер выбирает, какие токены «думают» дальше. Невыбранные токены
+   реально НЕ вычисляются (gather/scatter), поэтому экономия вычислений настоящая.
+   Идея «думать в скрытом пространстве, а не текстом» близка к Coconut (arXiv:2412.06769),
+   но технически здесь рекуррентная глубина, а не подача скрытого состояния обратно на вход.
+
+5. Память фактов с произведением ключей (Product-Key Memory: Lample et al., arXiv:1907.05242;
+   Memory Layers at Scale, arXiv:2412.09764). Поиск top-k среди N = n_keys^2 ячеек стоит O(sqrt(N)),
+   а не O(N): ключ делится на две половины, каждая ищется среди n_keys подключей.
 
 Файл содержит:
-- Полную реализацию на PyTorch (`torch.nn.Module`) для обучения на GPU/CPU (Раздел 1).
-- Автономное математическое ядро и верификатор на чистом NumPy (Раздел 2), позволяющее
-  запустить проверку математики, троичного сложения без умножений и цикла обучения даже в среде
-  без установленного PyTorch.
+- Раздел 1: реализацию на PyTorch (обучение на GPU/CPU, инкрементальная генерация с кэшем O(1)
+  на токен для SSM и O(W) для внимания, экспорт троичных весов).
+- Раздел 2: автономное ядро на NumPy: троичный сумматор без умножений, микро-прототип с ТОЧНЫМ
+  обратным распространением и численной проверкой градиентов, честный расчёт памяти модели.
+
+Запуск самопроверки:  python slr_net_engine.py
+Обучение на больших текстах: см. train_lm.py
 """
 
 from __future__ import annotations
+
 import math
 import time
-from dataclasses import dataclass
+from dataclasses import asdict, dataclass
 from typing import Dict, List, Optional, Tuple
 
 import numpy as np
@@ -39,680 +54,1130 @@ try:
     import torch.nn as nn
     import torch.nn.functional as F
     TORCH_AVAILABLE = True
-except ImportError:
+except ImportError:  # NumPy-часть работает и без PyTorch
     TORCH_AVAILABLE = False
 
 
 # =============================================================================
-# КОНФИГУРАЦИЯ АРХИТЕКТУРЫ SLR-Net
+# КОНФИГУРАЦИЯ
 # =============================================================================
 
 @dataclass
 class SLRNetConfig:
-    """Конфигурация моноязычного когнитивного ядра SLR-Net."""
-    vocab_size: int = 16384           # Моноязычный морфемный словарь (2^14 токенов вместо 128K+)
-    d_model: int = 1024               # Размерность скрытого вектора мысли
-    d_state: int = 16                 # Размерность внутреннего состояния селективного SSM (Mamba)
-    d_inner: int = 2048               # Внутренняя проекция блока
-    n_encoder_layers: int = 8         # Восходящий поток сжатия контекста (SSM + 1 локальный Attention)
-    n_reasoning_layers: int = 4       # Когнитивное ядро (рекуррентно переиспользуется K раз)
-    n_decoder_layers: int = 4         # Синтезатор речи на выходе
-    n_heads: int = 8                  # Число голов в редких слоях локального внимания
-    window_size: int = 256            # Окно локального внимания (не требует глобального KV-кэша)
-    max_latent_steps: int = 6         # Макс. число скрытых тактов мышления (Coconut Loop)
-    router_threshold: float = 0.45    # Порог когнитивной сложности токена (Mixture-of-Depths)
-    halt_entropy_target: float = 0.35 # Целевой порог уверенности для досрочного выхода из цикла мысли
-    memory_slots: int = 65536         # Число ячеек во внешней быстрой памяти фактов (Key-Value)
-    memory_top_k: int = 4             # Число извлекаемых фактов за O(1) на шаг мысли
+    """Конфигурация SLR-Net. Значения по умолчанию — пресет «large» (~206 млн параметров вместе с памятью фактов)."""
+    vocab_size: int = 16384           # Субсловный словарь (SentencePiece Unigram), 2^14 токенов
+    d_model: int = 1024               # Ширина остаточного потока
+    # --- Mamba-2 (SSD) ---
+    expand: int = 2                   # d_inner = expand * d_model
+    d_state: int = 64                 # Размер состояния SSM на голову (Mamba-2 обычно 64..128)
+    d_conv: int = 4                   # Ширина каузальной свёртки
+    ssm_headdim: int = 64             # Размер головы SSM
+    ssm_chunk: int = 64               # Длина блока для параллельного (chunked) скана
+    # --- Слои ---
+    n_encoder_layers: int = 8         # «Прелюдия»: SSM + редкое локальное внимание
+    encoder_attn_every: int = 4       # Каждый k-й слой прелюдии — внимание (остальные — Mamba-2)
+    n_reasoning_layers: int = 4       # Слои ядра мышления (общие веса, крутятся до max_latent_steps раз)
+    n_decoder_layers: int = 4         # «Кода»: синтез выходного распределения
+    decoder_attn_every: int = 2
+    # --- Внимание ---
+    n_heads: int = 16
+    n_kv_heads: int = 4               # GQA: меньше голов для K/V -> меньше кэш
+    window_size: int = 256            # Окно локального внимания
+    rope_theta: float = 10000.0
+    mlp_ratio: float = 4.0            # MLP (ReLU^2) после каждого слоя внимания; 0 — без MLP
+    # --- Ядро мышления + роутер ---
+    max_latent_steps: int = 4         # Максимум шагов скрытого мышления
+    router_capacity: float = 0.5      # Доля токенов, проходящих на каждый следующий шаг (0.5, 0.25, ...)
+    router_aux_coef: float = 0.01     # Вес вспомогательного BCE-лосса роутера
+    # --- Память фактов (product keys) ---
+    memory_keys: int = 256            # Ячеек памяти = memory_keys^2 (256^2 = 65536)
+    memory_key_dim: int = 256
+    memory_top_k: int = 8
+    # --- Прочее ---
+    ternary: bool = True              # False — обычные FP-веса (полезно для сравнения качества)
     rms_norm_eps: float = 1e-6
+    init_std: float = 0.02
+
+    @property
+    def d_inner(self) -> int:
+        return self.expand * self.d_model
+
+    @property
+    def ssm_nheads(self) -> int:
+        return self.d_inner // self.ssm_headdim
+
+    @property
+    def head_dim(self) -> int:
+        return self.d_model // self.n_heads
+
+    @property
+    def memory_slots(self) -> int:
+        return self.memory_keys ** 2
+
+    @property
+    def mlp_hidden(self) -> int:
+        return int(self.mlp_ratio * self.d_model)
+
+    def validate(self) -> None:
+        assert self.d_inner % self.ssm_headdim == 0, "d_inner должно делиться на ssm_headdim"
+        assert self.d_model % self.n_heads == 0, "d_model должно делиться на n_heads"
+        assert self.n_heads % self.n_kv_heads == 0, "n_heads должно делиться на n_kv_heads"
+        assert self.head_dim % 2 == 0, "head_dim должен быть чётным (RoPE)"
+        assert self.memory_key_dim % 2 == 0, "memory_key_dim должен быть чётным (product keys)"
+        assert 0.0 < self.router_capacity <= 1.0
+        assert self.memory_top_k <= self.memory_keys
+
+    def to_dict(self) -> Dict[str, object]:
+        return asdict(self)
+
+
+# Готовые размеры. «tiny» — для отладки на CPU, «small»/«base» — реальные кандидаты
+# на «маленькую, но умную» модель. Точное число параметров печатает calculate_hardware_footprint().
+PRESETS: Dict[str, Dict[str, object]] = {
+    "tiny": dict(
+        vocab_size=4096, d_model=128, d_state=16, ssm_headdim=32, ssm_chunk=32,
+        n_encoder_layers=4, encoder_attn_every=4, n_reasoning_layers=2,
+        n_decoder_layers=2, decoder_attn_every=2, n_heads=4, n_kv_heads=2,
+        window_size=64, max_latent_steps=3, memory_keys=32, memory_key_dim=64, memory_top_k=4,
+    ),
+    "small": dict(
+        vocab_size=16384, d_model=384, d_state=64, ssm_headdim=64,
+        n_encoder_layers=6, encoder_attn_every=3, n_reasoning_layers=2,
+        n_decoder_layers=4, decoder_attn_every=2, n_heads=6, n_kv_heads=2,
+        window_size=256, max_latent_steps=4, memory_keys=128, memory_key_dim=128, memory_top_k=8,
+    ),
+    "base": dict(
+        vocab_size=16384, d_model=768, d_state=64, ssm_headdim=64,
+        n_encoder_layers=8, encoder_attn_every=4, n_reasoning_layers=3,
+        n_decoder_layers=4, decoder_attn_every=2, n_heads=12, n_kv_heads=4,
+        window_size=512, max_latent_steps=4, memory_keys=256, memory_key_dim=256, memory_top_k=8,
+    ),
+    "large": dict(),
+}
+
+
+def make_config(preset: str = "small", **overrides) -> SLRNetConfig:
+    if preset not in PRESETS:
+        raise ValueError(f"Неизвестный пресет '{preset}'. Доступны: {list(PRESETS)}")
+    params = dict(PRESETS[preset])
+    params.update({k: v for k, v in overrides.items() if v is not None})
+    cfg = SLRNetConfig(**params)
+    cfg.validate()
+    return cfg
+
+
+def layer_kinds(n_layers: int, attn_every: int) -> List[str]:
+    """Схема слоёв: 'attn' на каждом attn_every-м месте, остальные — 'ssm'."""
+    return ["attn" if attn_every > 0 and (i + 1) % attn_every == 0 else "ssm" for i in range(n_layers)]
 
 
 # =============================================================================
-# РАЗДЕЛ 1. ПОЛНАЯ ПРОМЫШЛЕННАЯ РЕАЛИЗАЦИЯ НА PYTORCH (ДЛЯ ОБУЧЕНИЯ И ИНФЕРЕНСА)
+# РАЗДЕЛ 1. РЕАЛИЗАЦИЯ НА PYTORCH
 # =============================================================================
 
 if TORCH_AVAILABLE:
 
     class RMSNorm(nn.Module):
-        """Быстрая среднеквадратичная нормализация без вычитания среднего."""
+        """Среднеквадратичная нормализация (без вычитания среднего)."""
+
         def __init__(self, dim: int, eps: float = 1e-6):
             super().__init__()
             self.eps = eps
             self.weight = nn.Parameter(torch.ones(dim))
 
         def forward(self, x: torch.Tensor) -> torch.Tensor:
-            norm_x = x * torch.rsqrt(x.pow(2).mean(dim=-1, keepdim=True) + self.eps)
-            return norm_x * self.weight
-
+            dtype = x.dtype
+            x = x.float()
+            x = x * torch.rsqrt(x.pow(2).mean(dim=-1, keepdim=True) + self.eps)
+            return x.to(dtype) * self.weight
 
     class BitLinear158(nn.Module):
         """
-        Троичный линейный слой по схеме BitNet b1.58 (веса в {-1, 0, +1}).
-        Во время обучения хранит мастер-веса в FP16/FP32 для накопления малых градиентов,
-        а в прямом проходе квантует их до {-1, 0, +1} через Straight-Through Estimator (STE).
-        При экспорте в продакшен мастер-веса удаляются, остаётся только 2-битная упаковка.
+        Линейный слой BitNet b1.58: веса {-1, 0, +1} * gamma, активации int8 (absmax на токен).
+
+        Исправление относительно первой версии: масштаб gamma входит ВНУТРЬ STE
+        (w + (gamma * round(w / gamma) - w).detach()), как в официальной реализации.
+        Раньше в обратном проходе градиент дополнительно умножался на gamma (~0.01-0.06)
+        и тёк через сам gamma — это искажало обучение.
+
+        use_norm=True добавляет RMSNorm перед квантованием активаций (SubLN из BitNet).
+        Если вход уже нормализован снаружи, норму внутри не дублируем (use_norm=False).
         """
-        def __init__(self, in_features: int, out_features: int, eps: float = 1e-5):
+
+        def __init__(self, in_features: int, out_features: int, *, ternary: bool = True,
+                     use_norm: bool = True, bias: bool = False, eps: float = 1e-5):
             super().__init__()
             self.in_features = in_features
             self.out_features = out_features
+            self.ternary = ternary
             self.eps = eps
             self.weight = nn.Parameter(torch.empty(out_features, in_features))
-            self.norm = RMSNorm(in_features, eps=eps)
-            nn.init.kaiming_uniform_(self.weight, a=math.sqrt(5))
+            self.bias = nn.Parameter(torch.zeros(out_features)) if bias else None
+            self.norm = RMSNorm(in_features) if use_norm else None
+            nn.init.normal_(self.weight, std=0.02)
+            self._wq_cache: Optional[Tuple[Tuple[int, int, torch.dtype], torch.Tensor]] = None
 
-        def quantize_weights_ternary(self, w: torch.Tensor) -> Tuple[torch.Tensor, torch.Tensor]:
-            # Масштаб по среднему модулю: gamma = mean(|W|)
+        def _quantize_weight(self) -> torch.Tensor:
+            w = self.weight
             gamma = w.abs().mean().clamp(min=self.eps)
-            # Округление к ближайшему из {-1, 0, +1}
-            w_scaled = w / gamma
-            w_ternary = w_scaled.round().clamp(-1.0, 1.0)
-            # Straight-Through Estimator (STE): в прямом проходе w_ternary, в обратном — градиент по w
-            w_ste = (w_ternary - w).detach() + w
-            return w_ste, gamma
+            w_q = (w / gamma).round().clamp(-1.0, 1.0) * gamma
+            return w + (w_q - w).detach()
 
-        def quantize_activations_int8(self, x: torch.Tensor) -> Tuple[torch.Tensor, torch.Tensor]:
-            # Квантование активаций до 8-битной сетки [-128, 127] на каждый токен
-            q_max = 127.0
-            scale = x.abs().amax(dim=-1, keepdim=True).clamp(min=self.eps)
-            x_quant = (x * (q_max / scale)).round().clamp(-128.0, 127.0)
-            x_ste = (x_quant * (scale / q_max) - x).detach() + x
-            return x_ste, scale
-
-        def forward(self, x: torch.Tensor) -> torch.Tensor:
-            x_norm = self.norm(x)
-            x_q, _ = self.quantize_activations_int8(x_norm)
-            w_q, gamma = self.quantize_weights_ternary(self.weight)
-            # На аппаратном уровне F.linear с весами {-1, 0, +1} выполняется только сумматором
-            return F.linear(x_q, w_q) * gamma
-
-
-    class SelectiveSSMBlock(nn.Module):
-        """
-        Линейный рекуррентный блок в стиле Mamba (Selective State Space Model) на базе BitLinear158.
-        Сложность генерации нового токена: O(1) по времени и памяти (не требует хранения истории ключей).
-        """
-        def __init__(self, config: SLRNetConfig):
-            super().__init__()
-            self.d_model = config.d_model
-            self.d_inner = config.d_inner
-            self.d_state = config.d_state
-
-            self.norm = RMSNorm(config.d_model, eps=config.rms_norm_eps)
-            self.in_proj = BitLinear158(config.d_model, config.d_inner * 2)
-            # Локальная 1D-свёртка (окно 4) для захвата соседних морфем
-            self.conv1d = nn.Conv1d(
-                in_channels=config.d_inner,
-                out_channels=config.d_inner,
-                kernel_size=4,
-                padding=3,
-                groups=config.d_inner,
-                bias=True,
-            )
-            # Селективные параметры шага dt, входа B и считывания C зависят от текущего контекста
-            self.x_proj = BitLinear158(config.d_inner, config.d_state * 2 + config.d_inner)
-            # Логарифм матрицы затухания памяти A (всегда отрицательные собственные значения)
-            A = torch.arange(1, config.d_state + 1, dtype=torch.float32).repeat(config.d_inner, 1)
-            self.A_log = nn.Parameter(torch.log(A))
-            self.D = nn.Parameter(torch.ones(config.d_inner))
-            self.out_proj = BitLinear158(config.d_inner, config.d_model)
-
-        def forward(
-            self,
-            x: torch.Tensor,
-            ssm_state: Optional[torch.Tensor] = None
-        ) -> Tuple[torch.Tensor, torch.Tensor]:
-            batch, seq_len, _ = x.shape
-            residual = x
-            x_norm = self.norm(x)
-
-            xz = self.in_proj(x_norm)
-            x_branch, z_gate = xz.chunk(2, dim=-1)
-
-            # Каузальная 1D-свёртка
-            x_conv = self.conv1d(x_branch.transpose(1, 2))[..., :seq_len].transpose(1, 2)
-            x_conv = F.silu(x_conv)
-
-            # Вычисление контекстно-зависимых параметров B, C и шага дискретизации delta
-            ssm_params = self.x_proj(x_conv)
-            B, C, delta_raw = torch.split(
-                ssm_params, [self.d_state, self.d_state, self.d_inner], dim=-1
-            )
-            delta = F.softplus(delta_raw)  # [B, L, D_inner]
-            A = -torch.exp(self.A_log)     # [D_inner, D_state]
-
-            if ssm_state is None:
-                ssm_state = torch.zeros(
-                    batch, self.d_inner, self.d_state, device=x.device, dtype=x.dtype
-                )
-
-            outputs = []
-            for t in range(seq_len):
-                dt_t = delta[:, t, :].unsqueeze(-1)            # [B, D_inner, 1]
-                B_t = B[:, t, :].unsqueeze(1)                  # [B, 1, D_state]
-                C_t = C[:, t, :].unsqueeze(-1)                 # [B, D_state, 1]
-                u_t = x_conv[:, t, :].unsqueeze(-1)            # [B, D_inner, 1]
-
-                dA = torch.exp(dt_t * A.unsqueeze(0))          # [B, D_inner, D_state]
-                dB_u = dt_t * B_t * u_t                        # [B, D_inner, D_state]
-
-                ssm_state = dA * ssm_state + dB_u
-                y_t = torch.matmul(ssm_state, C_t).squeeze(-1) # [B, D_inner]
-                y_t = y_t + self.D * x_conv[:, t, :]
-                outputs.append(y_t)
-
-            y = torch.stack(outputs, dim=1)
-            y = y * F.silu(z_gate)
-            out = residual + self.out_proj(y)
-            return out, ssm_state
-
-
-    class SlidingWindowAttention(nn.Module):
-        """
-        Редкий слой локального скользящего внимания (используется всего 1 раз на каждые 6 слоёв SSM).
-        Обеспечивает точное сопоставление имён, чисел и ссылок внутри локального окна W без роста KV-кэша.
-        """
-        def __init__(self, config: SLRNetConfig):
-            super().__init__()
-            self.n_heads = config.n_heads
-            self.head_dim = config.d_model // config.n_heads
-            self.window_size = config.window_size
-
-            self.norm = RMSNorm(config.d_model, eps=config.rms_norm_eps)
-            self.q_proj = BitLinear158(config.d_model, config.d_model)
-            self.k_proj = BitLinear158(config.d_model, config.d_model)
-            self.v_proj = BitLinear158(config.d_model, config.d_model)
-            self.o_proj = BitLinear158(config.d_model, config.d_model)
+        def effective_weight(self) -> torch.Tensor:
+            if not self.ternary:
+                return self.weight
+            if torch.is_grad_enabled():
+                return self._quantize_weight()
+            # Инференс: кэшируем квантованные веса, чтобы не квантовать их на каждом токене
+            key = (self.weight.data_ptr(), self.weight._version, self.weight.dtype)
+            if self._wq_cache is None or self._wq_cache[0] != key:
+                self._wq_cache = (key, self._quantize_weight().detach())
+            return self._wq_cache[1]
 
         def forward(self, x: torch.Tensor) -> torch.Tensor:
-            batch, seq_len, d_model = x.shape
-            residual = x
+            if self.norm is not None:
+                x = self.norm(x)
+            if self.ternary:
+                scale = 127.0 / x.abs().amax(dim=-1, keepdim=True).clamp(min=self.eps)
+                x_q = (x * scale).round().clamp(-128.0, 127.0) / scale
+                x = x + (x_q - x).detach()
+            w = self.effective_weight()
+            return F.linear(x, w.to(x.dtype), None if self.bias is None else self.bias.to(x.dtype))
+
+        @torch.no_grad()
+        def export_ternary(self) -> Tuple[np.ndarray, float]:
+            """Возвращает (троичная матрица int8, gamma) для упаковки 5 тритов в байт."""
+            w = self.weight.float()
+            gamma = float(w.abs().mean().clamp(min=self.eps))
+            trits = (w / gamma).round().clamp(-1, 1).to(torch.int8).cpu().numpy()
+            return trits, gamma
+
+    # ---------------------------------------------------------------- RoPE
+
+    def rope_cos_sin(positions: torch.Tensor, dim: int, theta: float, dtype: torch.dtype):
+        inv_freq = 1.0 / (theta ** (torch.arange(0, dim, 2, device=positions.device).float() / dim))
+        freqs = positions.float()[:, None] * inv_freq[None, :]
+        emb = torch.cat([freqs, freqs], dim=-1)
+        return emb.cos().to(dtype), emb.sin().to(dtype)
+
+    def apply_rope(x: torch.Tensor, cos: torch.Tensor, sin: torch.Tensor) -> torch.Tensor:
+        x1, x2 = x.chunk(2, dim=-1)
+        return x * cos + torch.cat([-x2, x1], dim=-1) * sin
+
+    # ---------------------------------------------------------------- Mamba-2 SSD
+
+    def segsum(x: torch.Tensor) -> torch.Tensor:
+        """Устойчивая сегментная сумма: out[..., i, j] = sum_{k=j+1..i} x[..., k] (i >= j), иначе -inf."""
+        T = x.size(-1)
+        x = x.unsqueeze(-1).expand(*x.shape, T)
+        mask = torch.tril(torch.ones(T, T, dtype=torch.bool, device=x.device), diagonal=-1)
+        x = x.masked_fill(~mask, 0.0)
+        x_segsum = torch.cumsum(x, dim=-2)
+        mask = torch.tril(torch.ones(T, T, dtype=torch.bool, device=x.device), diagonal=0)
+        return x_segsum.masked_fill(~mask, float("-inf"))
+
+    def ssd_scan(X: torch.Tensor, A: torch.Tensor, B: torch.Tensor, C: torch.Tensor,
+                 chunk: int, initial_state: Optional[torch.Tensor] = None
+                 ) -> Tuple[torch.Tensor, torch.Tensor]:
+        """
+        Параллельный блочный скан Mamba-2 (SSD). Эквивалентен рекуррентности
+            h_t = exp(A_t) * h_{t-1} + X_t ⊗ B_t,   y_t = h_t · C_t
+        но считается матричными умножениями, а не циклом по времени.
+          X: (b, l, h, p)  — вход, уже умноженный на dt
+          A: (b, l, h)     — A * dt (отрицательное)
+          B, C: (b, l, n)  — общие для всех голов (ngroups = 1)
+        Возвращает y: (b, l, h, p) и финальное состояние (b, h, p, n).
+        """
+        b, l, h, p = X.shape
+        n = B.shape[-1]
+        T = max(1, min(chunk, l))
+        pad = (T - l % T) % T
+        X, A, B, C = (t.float() for t in (X, A, B, C))
+        if pad:
+            X = F.pad(X, (0, 0, 0, 0, 0, pad))
+            A = F.pad(A, (0, 0, 0, pad))
+            B = F.pad(B, (0, 0, 0, pad))
+            C = F.pad(C, (0, 0, 0, pad))
+        c = X.shape[1] // T
+        X = X.reshape(b, c, T, h, p)
+        B = B.reshape(b, c, T, n)
+        C = C.reshape(b, c, T, n)
+        A = A.reshape(b, c, T, h).permute(0, 3, 1, 2)          # (b, h, c, T)
+        A_cum = torch.cumsum(A, dim=-1)
+
+        # 1) Внутри блоков (диагональные блоки)
+        L = torch.exp(segsum(A))                               # (b, h, c, T, T)
+        CB = torch.einsum("bcln,bcsn->bcls", C, B)             # (b, c, T, T)
+        Y_diag = torch.einsum("bcls,bhcls,bcshp->bclhp", CB, L, X)
+
+        # 2) Состояние на конце каждого блока
+        decay_states = torch.exp(A_cum[..., -1:] - A_cum)      # (b, h, c, T)
+        states = torch.einsum("bcln,bhcl,bclhp->bchpn", B, decay_states, X)
+
+        # 3) Рекуррентность между блоками
+        if initial_state is None:
+            initial_state = torch.zeros(b, h, p, n, device=X.device, dtype=X.dtype)
+        states = torch.cat([initial_state.float().unsqueeze(1), states], dim=1)
+        decay_chunk = torch.exp(segsum(F.pad(A_cum[..., -1], (1, 0))))   # (b, h, c+1, c+1)
+        new_states = torch.einsum("bhzc,bchpn->bzhpn", decay_chunk, states)
+        states, final_state = new_states[:, :-1], new_states[:, -1]
+
+        # 4) Вклад состояния из прошлых блоков в выход
+        state_decay_out = torch.exp(A_cum)                     # (b, h, c, T)
+        Y_off = torch.einsum("bcln,bchpn,bhcl->bclhp", C, states, state_decay_out)
+
+        Y = (Y_diag + Y_off).reshape(b, c * T, h, p)[:, :l]
+        return Y, final_state
+
+    class Mamba2Block(nn.Module):
+        """
+        Блок Mamba-2 с троичными проекциями. Обучение — параллельный скан (ssd_scan),
+        генерация — шаг рекуррентности с состоянием фиксированного размера (step).
+        """
+
+        def __init__(self, cfg: SLRNetConfig):
+            super().__init__()
+            self.d_model, self.d_inner = cfg.d_model, cfg.d_inner
+            self.d_state, self.headdim = cfg.d_state, cfg.ssm_headdim
+            self.nheads, self.chunk, self.d_conv = cfg.ssm_nheads, cfg.ssm_chunk, cfg.d_conv
+            self.conv_dim = self.d_inner + 2 * self.d_state
+
+            self.norm = RMSNorm(cfg.d_model, eps=cfg.rms_norm_eps)
+            # Вход уже нормализован self.norm, поэтому внутри BitLinear норму не дублируем
+            self.in_proj = BitLinear158(cfg.d_model, self.d_inner + self.conv_dim,
+                                        ternary=cfg.ternary, use_norm=False)
+            # Шаг dt — маленькая, но чувствительная проекция: держим её в полной точности
+            self.dt_proj = nn.Linear(cfg.d_model, self.nheads, bias=True)
+            self.conv1d = nn.Conv1d(self.conv_dim, self.conv_dim, kernel_size=cfg.d_conv,
+                                    groups=self.conv_dim, padding=cfg.d_conv - 1, bias=True)
+            self.A_log = nn.Parameter(torch.log(torch.empty(self.nheads).uniform_(1.0, 16.0)))
+            self.D = nn.Parameter(torch.ones(self.nheads))
+            self.out_norm = RMSNorm(self.d_inner, eps=cfg.rms_norm_eps)
+            self.out_proj = BitLinear158(self.d_inner, cfg.d_model, ternary=cfg.ternary, use_norm=False)
+
+            # Инициализация dt как в Mamba: dt ~ logUniform[1e-3, 1e-1] (иначе память «забывается» мгновенно)
+            dt = torch.exp(torch.empty(self.nheads).uniform_(math.log(1e-3), math.log(1e-1)))
+            with torch.no_grad():
+                self.dt_proj.bias.copy_(dt + torch.log(-torch.expm1(-dt)))  # обратный softplus
+                nn.init.normal_(self.dt_proj.weight, std=0.02)
+
+        def _project(self, x: torch.Tensor):
             h = self.norm(x)
+            zxbc = self.in_proj(h)
+            z, xBC = zxbc.split([self.d_inner, self.conv_dim], dim=-1)
+            dt = F.softplus(self.dt_proj(h).float())
+            return z, xBC, dt
 
-            q = self.q_proj(h).view(batch, seq_len, self.n_heads, self.head_dim).transpose(1, 2)
-            k = self.k_proj(h).view(batch, seq_len, self.n_heads, self.head_dim).transpose(1, 2)
-            v = self.v_proj(h).view(batch, seq_len, self.n_heads, self.head_dim).transpose(1, 2)
+        def forward(self, x: torch.Tensor) -> torch.Tensor:
+            b, l, _ = x.shape
+            z, xBC, dt = self._project(x)
+            xBC = F.silu(self.conv1d(xBC.transpose(1, 2))[..., :l].transpose(1, 2))
+            xs, Bm, Cm = xBC.split([self.d_inner, self.d_state, self.d_state], dim=-1)
+            A = -torch.exp(self.A_log.float())                        # (h,)
+            X = xs.reshape(b, l, self.nheads, self.headdim)
+            y, _ = ssd_scan(X.float() * dt[..., None], A * dt, Bm, Cm, self.chunk)
+            y = y + X.float() * self.D.float()[:, None]
+            y = y.reshape(b, l, self.d_inner).to(x.dtype)
+            y = self.out_norm(y * F.silu(z))
+            return x + self.out_proj(y)
 
-            scores = torch.matmul(q, k.transpose(-2, -1)) / math.sqrt(self.head_dim)
-            # Каузальная + оконная маска (смотрит только назад не далее чем на window_size токенов)
-            idx = torch.arange(seq_len, device=x.device)
-            mask = (idx.unsqueeze(0) <= idx.unsqueeze(1)) & (
-                (idx.unsqueeze(1) - idx.unsqueeze(0)) < self.window_size
-            )
-            scores = scores.masked_fill(~mask.unsqueeze(0).unsqueeze(0), float("-inf"))
-            attn = F.softmax(scores, dim=-1)
-            context = torch.matmul(attn, v).transpose(1, 2).contiguous().view(batch, seq_len, d_model)
-            return residual + self.o_proj(context)
+        def init_cache(self, batch: int, device, dtype) -> Dict[str, torch.Tensor]:
+            return {
+                "conv": torch.zeros(batch, self.conv_dim, self.d_conv - 1, device=device, dtype=dtype),
+                "ssm": torch.zeros(batch, self.nheads, self.headdim, self.d_state, device=device,
+                                   dtype=torch.float32),
+            }
 
+        def step(self, x: torch.Tensor, cache: Dict[str, torch.Tensor],
+                 active: Optional[torch.Tensor] = None) -> torch.Tensor:
+            """Один токен: x (b, d_model). active (b,) — для каких строк обновлять состояние."""
+            b = x.shape[0]
+            z, xBC, dt = self._project(x)
+            window = torch.cat([cache["conv"], xBC.unsqueeze(-1)], dim=-1)       # (b, C, K)
+            xBC = F.silu((window * self.conv1d.weight[:, 0, :]).sum(-1) + self.conv1d.bias)
+            xs, Bm, Cm = xBC.split([self.d_inner, self.d_state, self.d_state], dim=-1)
+            A = -torch.exp(self.A_log.float())
+            dA = torch.exp(dt * A)                                              # (b, h)
+            X = xs.reshape(b, self.nheads, self.headdim).float()
+            state = cache["ssm"] * dA[..., None, None] + \
+                (X * dt[..., None]).unsqueeze(-1) * Bm.float()[:, None, None, :]
+            y = (state * Cm.float()[:, None, None, :]).sum(-1) + X * self.D.float()[:, None]
+            y = y.reshape(b, self.d_inner).to(x.dtype)
+            out = x + self.out_proj(self.out_norm(y * F.silu(z)))
+            new_conv = window[..., 1:]
+            if active is None:
+                cache["conv"], cache["ssm"] = new_conv, state
+            else:
+                cache["conv"] = torch.where(active[:, None, None], new_conv, cache["conv"])
+                cache["ssm"] = torch.where(active[:, None, None, None], state, cache["ssm"])
+            return out
 
-    class SparseFactMemory(nn.Module):
-        """
-        Внешняя разреженная память фактов (по принципу Memory Layers at Scale).
-        Заменяет гигантские полносвязные FFN-слои: активирует только top_k = 4 ячейки из десятков тысяч
-        на один запрос мысли, поэтому вычислительная стоимость практически равна нулю.
-        """
-        def __init__(self, config: SLRNetConfig):
+    # ---------------------------------------------------------------- Внимание + MLP
+
+    class ReluSqMLP(nn.Module):
+        """MLP с активацией ReLU^2 (как в BitNet b1.58 2B4T: даёт разреженные активации)."""
+
+        def __init__(self, cfg: SLRNetConfig):
             super().__init__()
-            self.num_slots = config.memory_slots
-            self.top_k = config.memory_top_k
-            self.key_dim = config.d_model // 4
+            self.norm = RMSNorm(cfg.d_model, eps=cfg.rms_norm_eps)
+            self.up = BitLinear158(cfg.d_model, cfg.mlp_hidden, ternary=cfg.ternary, use_norm=False)
+            self.down = BitLinear158(cfg.mlp_hidden, cfg.d_model, ternary=cfg.ternary, use_norm=True)
 
-            self.query_proj = BitLinear158(config.d_model, self.key_dim)
-            self.keys = nn.Parameter(torch.randn(self.num_slots, self.key_dim) * 0.02)
-            self.values = nn.Parameter(torch.randn(self.num_slots, config.d_model) * 0.02)
+        def forward(self, x: torch.Tensor) -> torch.Tensor:
+            return x + self.down(F.relu(self.up(self.norm(x))).square())
+
+    class LocalAttentionBlock(nn.Module):
+        """
+        Каузальное внимание в скользящем окне W (+ RoPE, GQA) и MLP.
+        Считается блоками: каждый блок из W запросов смотрит на 2W ключей (свой и предыдущий блок),
+        поэтому память и время O(L * W), а не O(L^2), как было с полной матрицей L x L.
+        """
+
+        def __init__(self, cfg: SLRNetConfig):
+            super().__init__()
+            self.n_heads, self.n_kv_heads, self.head_dim = cfg.n_heads, cfg.n_kv_heads, cfg.head_dim
+            self.window, self.rope_theta = cfg.window_size, cfg.rope_theta
+            self.norm = RMSNorm(cfg.d_model, eps=cfg.rms_norm_eps)
+            qkv_out = (self.n_heads + 2 * self.n_kv_heads) * self.head_dim
+            self.qkv = BitLinear158(cfg.d_model, qkv_out, ternary=cfg.ternary, use_norm=False)
+            self.o_proj = BitLinear158(self.n_heads * self.head_dim, cfg.d_model,
+                                       ternary=cfg.ternary, use_norm=True)
+            self.mlp = ReluSqMLP(cfg) if cfg.mlp_ratio > 0 else None
+
+        def _qkv(self, x: torch.Tensor, positions: torch.Tensor):
+            b, l, _ = x.shape
+            q, k, v = self.qkv(self.norm(x)).split(
+                [self.n_heads * self.head_dim, self.n_kv_heads * self.head_dim,
+                 self.n_kv_heads * self.head_dim], dim=-1)
+            q = q.view(b, l, self.n_heads, self.head_dim).transpose(1, 2)
+            k = k.view(b, l, self.n_kv_heads, self.head_dim).transpose(1, 2)
+            v = v.view(b, l, self.n_kv_heads, self.head_dim).transpose(1, 2)
+            cos, sin = rope_cos_sin(positions, self.head_dim, self.rope_theta, q.dtype)
+            return apply_rope(q, cos, sin), apply_rope(k, cos, sin), v
+
+        def _expand_kv(self, t: torch.Tensor) -> torch.Tensor:
+            rep = self.n_heads // self.n_kv_heads
+            return t if rep == 1 else t.repeat_interleave(rep, dim=1)
+
+        def _local_attention(self, q, k, v) -> torch.Tensor:
+            b, h, l, d = q.shape
+            W = self.window
+            if l <= W:  # всё помещается в окно — обычное каузальное внимание
+                return F.scaled_dot_product_attention(q, k, v, is_causal=True)
+            nb = math.ceil(l / W)
+            pad = nb * W - l
+            if pad:
+                q, k, v = (F.pad(t, (0, 0, 0, pad)) for t in (q, k, v))
+            q = q.reshape(b, h, nb, W, d)
+            k = k.reshape(b, h, nb, W, d)
+            v = v.reshape(b, h, nb, W, d)
+            k_prev = torch.cat([torch.zeros_like(k[:, :, :1]), k[:, :, :-1]], dim=2)
+            v_prev = torch.cat([torch.zeros_like(v[:, :, :1]), v[:, :, :-1]], dim=2)
+            kk = torch.cat([k_prev, k], dim=3)                                # (b, h, nb, 2W, d)
+            vv = torch.cat([v_prev, v], dim=3)
+            i = torch.arange(W, device=q.device)[:, None]
+            j = torch.arange(2 * W, device=q.device)[None, :]
+            dist = (i + W) - j
+            band = (dist >= 0) & (dist < W)                                   # (W, 2W)
+            mask = band.unsqueeze(0).repeat(nb, 1, 1)
+            mask[0, :, :W] = False                                            # у первого блока нет «прошлого»
+            out = F.scaled_dot_product_attention(
+                q.reshape(b, h * nb, W, d), kk.reshape(b, h * nb, 2 * W, d),
+                vv.reshape(b, h * nb, 2 * W, d), attn_mask=mask.repeat(h, 1, 1).unsqueeze(0))
+            return out.reshape(b, h, nb * W, d)[:, :, :l]
+
+        def forward(self, x: torch.Tensor) -> torch.Tensor:
+            b, l, _ = x.shape
+            q, k, v = self._qkv(x, torch.arange(l, device=x.device))
+            out = self._local_attention(q, self._expand_kv(k), self._expand_kv(v))
+            x = x + self.o_proj(out.transpose(1, 2).reshape(b, l, -1))
+            return self.mlp(x) if self.mlp is not None else x
+
+        def init_cache(self, batch: int, device, dtype) -> Dict[str, object]:
+            return {"k": None, "v": None, "pos": 0}
+
+        def step(self, x: torch.Tensor, cache: Dict[str, object]) -> torch.Tensor:
+            b = x.shape[0]
+            pos = torch.tensor([cache["pos"]], device=x.device)
+            q, k, v = self._qkv(x.unsqueeze(1), pos)
+            if cache["k"] is not None:
+                k = torch.cat([cache["k"], k], dim=2)[:, :, -self.window:]
+                v = torch.cat([cache["v"], v], dim=2)[:, :, -self.window:]
+            cache["k"], cache["v"], cache["pos"] = k, v, cache["pos"] + 1
+            out = F.scaled_dot_product_attention(q, self._expand_kv(k), self._expand_kv(v))
+            x = x + self.o_proj(out.transpose(1, 2).reshape(b, -1))
+            return self.mlp(x) if self.mlp is not None else x
+
+    # ---------------------------------------------------------------- Память фактов
+
+    class ProductKeyMemory(nn.Module):
+        """
+        Память фактов с произведением ключей. N = n_keys^2 ячеек, но поиск top-k стоит
+        O(n_keys * key_dim) благодаря разбиению запроса на две половины. Результат поиска ТОЧНЫЙ:
+        top-k суммы s1[i] + s2[j] всегда лежит внутри topk(s1) x topk(s2).
+        (В первой версии запрос сравнивался со всеми 65536 ключами — O(N) и гигабайты памяти.)
+        """
+
+        def __init__(self, cfg: SLRNetConfig):
+            super().__init__()
+            self.n_keys, self.top_k = cfg.memory_keys, cfg.memory_top_k
+            self.half = cfg.memory_key_dim // 2
+            self.query = BitLinear158(cfg.d_model, cfg.memory_key_dim, ternary=cfg.ternary, use_norm=True)
+            self.keys = nn.Parameter(torch.randn(2, self.n_keys, self.half) / math.sqrt(self.half))
+            self.values = nn.Embedding(self.n_keys ** 2, cfg.d_model)
+            nn.init.normal_(self.values.weight, std=cfg.d_model ** -0.5)
             self.gate = nn.Parameter(torch.tensor(0.1))
 
-        def forward(self, z: torch.Tensor) -> torch.Tensor:
-            # z: [B, L, D]
-            q = F.normalize(self.query_proj(z), dim=-1)
-            k_norm = F.normalize(self.keys, dim=-1)
-            scores = torch.matmul(q, k_norm.t())  # [B, L, num_slots]
-            top_scores, top_indices = torch.topk(scores, k=self.top_k, dim=-1)
-            weights = F.softmax(top_scores * 10.0, dim=-1)  # [B, L, top_k]
+        def lookup(self, x: torch.Tensor) -> Tuple[torch.Tensor, torch.Tensor]:
+            """x: (N, d_model) -> (индексы (N, k), веса (N, k))."""
+            q = self.query(x).float()
+            q1, q2 = q[:, :self.half], q[:, self.half:]
+            s1, i1 = (q1 @ self.keys[0].float().t()).topk(self.top_k, dim=-1)
+            s2, i2 = (q2 @ self.keys[1].float().t()).topk(self.top_k, dim=-1)
+            cand = (s1[:, :, None] + s2[:, None, :]).flatten(1)             # (N, k*k)
+            cand_idx = (i1[:, :, None] * self.n_keys + i2[:, None, :]).flatten(1)
+            best, pos = cand.topk(self.top_k, dim=-1)
+            return cand_idx.gather(1, pos), torch.softmax(best, dim=-1)
 
-            selected_values = self.values[top_indices]      # [B, L, top_k, D]
-            mem_out = (weights.unsqueeze(-1) * selected_values).sum(dim=-2)
-            return z + torch.tanh(self.gate) * mem_out
+        def forward(self, x: torch.Tensor) -> torch.Tensor:
+            shape = x.shape
+            flat = x.reshape(-1, shape[-1])
+            idx, w = self.lookup(flat)
+            mem = F.embedding_bag(idx, self.values.weight, per_sample_weights=w.to(self.values.weight.dtype),
+                                  mode="sum")
+            return x + (torch.tanh(self.gate) * mem).to(x.dtype).reshape(shape)
 
+    # ---------------------------------------------------------------- Ядро мышления
 
-    class CoconutLatentReasoningCore(nn.Module):
+    class RecurrentDepthCore(nn.Module):
         """
-        Сердце SLR-Net: Скрытый цикл латентного рассуждения (Coconut + Mixture-of-Depths).
-        - Оценивает когнитивную сложность каждого токена через лёгкий роутер.
-        - Простые токены (союзы, предлоги, очевидные окончания) обходят цикл за 0 дополнительных тактов.
-        - Сложные смысловые узлы погружаются в рекуррентный цикл из 4 слоёв с переиспользованием весов
-          и доступом к внешней памяти фактов, пока внутренняя неопределённость (энтропия) не упадёт ниже порога.
+        Ядро «скрытого мышления»: стек Mamba-2 слоёв с общими весами, который крутится до K раз.
+        На каждом шаге k роутер решает, какие токены думают дальше:
+          • обучение ("topk"): ровно ceil(L * capacity^(k+1)) лучших токенов среди прошедших шаг k-1
+            (фиксированный бюджет вычислений; общий бюджет K шагов <= одного полного прохода при capacity=0.5)
+            + BCE-лосс, обучающий роутер предсказывать этот выбор каузально;
+          • инференс ("threshold"): токен думает, пока sigmoid(router) > 0.5 — решение каузальное,
+            поэтому работает и в пошаговой генерации.
+        Выбранные токены собираются (gather) в подпоследовательность, обрабатываются и
+        возвращаются на место (scatter) — невыбранные токены не стоят ни одной операции.
         """
-        def __init__(self, config: SLRNetConfig):
+
+        def __init__(self, cfg: SLRNetConfig):
             super().__init__()
-            self.config = config
-            self.router = nn.Linear(config.d_model, 1)
-            self.halt_predictor = nn.Linear(config.d_model, 1)
+            self.cfg = cfg
+            self.layers = nn.ModuleList([Mamba2Block(cfg) for _ in range(cfg.n_reasoning_layers)])
+            self.memory = ProductKeyMemory(cfg)
+            self.router = nn.Linear(cfg.d_model, 1)
+            self.step_emb = nn.Parameter(torch.randn(cfg.max_latent_steps, cfg.d_model) * cfg.init_std)
+            nn.init.normal_(self.router.weight, std=cfg.init_std)
+            nn.init.zeros_(self.router.bias)
 
-            # Когнитивное ядро из 4 троичных блоков, которые прокручиваются K раз (Weight Tied Recurrence)
-            self.thought_layers = nn.ModuleList([
-                SelectiveSSMBlock(config) for _ in range(config.n_reasoning_layers)
-            ])
-            self.step_embeddings = nn.Embedding(config.max_latent_steps, config.d_model)
-            self.fact_memory = SparseFactMemory(config)
-            self.norm = RMSNorm(config.d_model, eps=config.rms_norm_eps)
+        def _think(self, z_in: torch.Tensor) -> torch.Tensor:
+            h = self.memory(z_in)
+            for layer in self.layers:
+                h = layer(h)
+            return h
 
-        def forward(self, h: torch.Tensor) -> Tuple[torch.Tensor, Dict[str, float]]:
-            # 1. Детектор когнитивной сложности (Mixture-of-Depths)
-            complexity_prob = torch.sigmoid(self.router(h))  # [B, L, 1]
-            needs_thinking_mask = (complexity_prob > self.config.router_threshold).float()
-
+        def forward(self, h: torch.Tensor, routing: str = "topk"):
+            b, l, d = h.shape
             z = h
-            accumulated_thought = torch.zeros_like(h)
-            remaining_budget = torch.ones_like(complexity_prob)
-            steps_executed = 0
-
-            # 2. Внутренний латентный цикл (Coconut Continuous Thought)
-            for step in range(self.config.max_latent_steps):
-                steps_executed += 1
-                step_emb = self.step_embeddings(
-                    torch.tensor(step, device=h.device)
-                ).view(1, 1, -1)
-                z_step = z + step_emb
-
-                # Обращение к внешней индексированной памяти фактов
-                z_step = self.fact_memory(z_step)
-
-                # Проход через рекуррентное когнитивное ядро
-                for layer in self.thought_layers:
-                    z_step, _ = layer(z_step)
-
-                z_step = self.norm(z_step)
-
-                # Оценка достаточности рассуждения (Adaptive Computation Time / Halting)
-                halt_prob = torch.sigmoid(self.halt_predictor(z_step))
-                weight = halt_prob * remaining_budget
-                accumulated_thought = accumulated_thought + weight * z_step
-                remaining_budget = remaining_budget * (1.0 - halt_prob)
-                z = z_step
-
-                # Если средняя оставшаяся неопределённость упала ниже порога — выходим досрочно
-                if remaining_budget.mean().item() < self.config.halt_entropy_target:
+            cand = torch.ones(b, l, dtype=torch.bool, device=h.device)
+            aux = torch.zeros((), device=h.device)
+            depth = torch.zeros(b, l, device=h.device)
+            for k in range(self.cfg.max_latent_steps):
+                z_in = z + self.step_emb[k].to(z.dtype)
+                logit = self.router(z_in).squeeze(-1).float()                   # (b, l)
+                if routing == "topk":
+                    cap = min(l, max(1, math.ceil(l * self.cfg.router_capacity ** (k + 1))))
+                    top = logit.masked_fill(~cand, float("-inf")).topk(cap, dim=1).indices
+                    sel = torch.zeros_like(cand).scatter_(1, top, True) & cand
+                    aux = aux + F.binary_cross_entropy_with_logits(logit[cand], sel[cand].float())
+                elif routing == "threshold":
+                    sel = cand & (logit > 0)
+                elif routing == "all":
+                    sel = cand
+                else:
+                    raise ValueError(f"Неизвестный режим маршрутизации: {routing}")
+                if not bool(sel.any()):
                     break
+                counts = sel.sum(dim=1)
+                lmax = int(counts.max())
+                order = torch.argsort((~sel).to(torch.int8), dim=1, stable=True)[:, :lmax]
+                valid = torch.arange(lmax, device=h.device)[None, :] < counts[:, None]
+                gidx = order.unsqueeze(-1).expand(-1, -1, d)
+                gate = torch.sigmoid(logit).gather(1, order) * valid
+                out = self._think(torch.gather(z_in, 1, gidx))
+                delta = (out - torch.gather(z, 1, gidx)) * gate.unsqueeze(-1)
+                z = z.scatter_add(1, gidx, delta.to(z.dtype))
+                depth = depth + sel.float()
+                cand = sel
+            stats = {"core_depth_mean": depth.mean().detach(),
+                     "core_step1_frac": (depth > 0).float().mean().detach()}
+            return z, aux, stats
 
-            # Добавляем остаток на последнем такте
-            accumulated_thought = accumulated_thought + remaining_budget * z
+        def init_cache(self, batch: int, device, dtype):
+            return [[layer.init_cache(batch, device, dtype) for layer in self.layers]
+                    for _ in range(self.cfg.max_latent_steps)]
 
-            # Смешиваем: простые токены идут напрямую, сложные получают результат глубокого цикла
-            out = h + needs_thinking_mask * (complexity_prob * accumulated_thought)
+        def step(self, z: torch.Tensor, cache) -> torch.Tensor:
+            active = torch.ones(z.shape[0], dtype=torch.bool, device=z.device)
+            for k in range(self.cfg.max_latent_steps):
+                z_in = z + self.step_emb[k].to(z.dtype)
+                logit = self.router(z_in).squeeze(-1).float()
+                active = active & (logit > 0)
+                if not bool(active.any()):
+                    break
+                h = self.memory(z_in)
+                for layer, c in zip(self.layers, cache[k]):
+                    h = layer.step(h, c, active=active)
+                gate = torch.sigmoid(logit).to(z.dtype)[:, None]
+                z = torch.where(active[:, None], z + gate * (h - z), z)
+            return z
 
-            stats = {
-                "routed_tokens_ratio": float(needs_thinking_mask.mean().item()),
-                "latent_steps_used": float(steps_executed),
-                "mean_complexity": float(complexity_prob.mean().item()),
-            }
-            return out, stats
-
+    # ---------------------------------------------------------------- Модель целиком
 
     class SLRNetLanguageModel(nn.Module):
         """
-        Полная языковая модель SLR-Net в сборе:
-        1. Моноязычный морфемный эмбеддинг (связан весами с выходным классификатором — Weight Tying).
-        2. Восходящий контекстный кодировщик (Mamba SSM + редкий локальный Sliding Window Attention).
-        3. Когнитивное ядро латентного рассуждения (Coconut + Mixture-of-Depths + Sparse Fact Memory).
-        4. Нисходящий речевой декодер для грамотного построения фразы.
+        Прелюдия (Mamba-2 + локальное внимание) -> ядро мышления (рекуррентная глубина + роутер +
+        память фактов) -> кода (Mamba-2 + локальное внимание) -> RMSNorm -> выход (связан с эмбеддингом).
+        Все слои каузальные: модель — авторегрессионная языковая модель.
         """
+
         def __init__(self, config: SLRNetConfig):
             super().__init__()
+            config.validate()
             self.config = config
+
+            def build(kind: str) -> nn.Module:
+                return LocalAttentionBlock(config) if kind == "attn" else Mamba2Block(config)
+
             self.tok_embeddings = nn.Embedding(config.vocab_size, config.d_model)
-
-            # Восходящий поток: каждый 4-й слой — локальное скользящее внимание, остальные — линейный SSM
-            self.encoder = nn.ModuleList([
-                SlidingWindowAttention(config) if (i + 1) % 4 == 0 else SelectiveSSMBlock(config)
-                for i in range(config.n_encoder_layers)
-            ])
-
-            # Ядро латентного мышления
-            self.cognitive_core = CoconutLatentReasoningCore(config)
-
-            # Синтезатор выходной речи
-            self.decoder = nn.ModuleList([
-                SlidingWindowAttention(config) if (i + 1) % 2 == 0 else SelectiveSSMBlock(config)
-                for i in range(config.n_decoder_layers)
-            ])
-
+            self.encoder = nn.ModuleList(
+                [build(k) for k in layer_kinds(config.n_encoder_layers, config.encoder_attn_every)])
+            self.core = RecurrentDepthCore(config)
+            self.decoder = nn.ModuleList(
+                [build(k) for k in layer_kinds(config.n_decoder_layers, config.decoder_attn_every)])
             self.final_norm = RMSNorm(config.d_model, eps=config.rms_norm_eps)
             self.lm_head = nn.Linear(config.d_model, config.vocab_size, bias=False)
-            # Экономия памяти: входная и выходная матрицы словаря используют одни и те же веса
-            self.lm_head.weight = self.tok_embeddings.weight
+            self.lm_head.weight = self.tok_embeddings.weight      # weight tying
 
-        def forward(
-            self,
-            input_ids: torch.Tensor,
-            targets: Optional[torch.Tensor] = None
-        ) -> Tuple[torch.Tensor, Optional[torch.Tensor], Dict[str, float]]:
+            # Инициализация: эмбеддинги N(0, 0.02) (раньше было N(0, 1) -> стартовый лосс ~45 вместо ln V),
+            # выходные проекции остаточных веток уменьшены на 1/sqrt(2 * число слоёв) (как в GPT-2).
+            nn.init.normal_(self.tok_embeddings.weight, std=config.init_std)
+            n_res = config.n_encoder_layers + config.n_decoder_layers + config.n_reasoning_layers
+            for name, p in self.named_parameters():
+                if name.endswith(("out_proj.weight", "o_proj.weight", "down.weight")):
+                    nn.init.normal_(p, std=config.init_std / math.sqrt(2 * n_res))
+
+        def num_params(self) -> Dict[str, int]:
+            total = sum(p.numel() for p in self.parameters())
+            ternary = sum(m.weight.numel() for m in self.modules()
+                          if isinstance(m, BitLinear158) and m.ternary)
+            memory = self.core.memory.values.weight.numel()
+            return {"total": total, "ternary": ternary, "memory_values": memory,
+                    "embedding": self.tok_embeddings.weight.numel()}
+
+        def forward(self, input_ids: torch.Tensor, targets: Optional[torch.Tensor] = None,
+                    routing: Optional[str] = None):
+            """
+            routing: "topk" (по умолчанию при обучении), "threshold" (по умолчанию при eval) или "all".
+            Возвращает (logits, loss, stats). stats — тензоры без градиента (без .item(), чтобы не
+            синхронизировать GPU на каждом шаге).
+            """
+            routing = routing or ("topk" if self.training else "threshold")
             h = self.tok_embeddings(input_ids)
-
             for layer in self.encoder:
-                if isinstance(layer, SelectiveSSMBlock):
-                    h, _ = layer(h)
-                else:
-                    h = layer(h)
-
-            h, reasoning_stats = self.cognitive_core(h)
-
+                h = layer(h)
+            h, aux, stats = self.core(h, routing)
             for layer in self.decoder:
-                if isinstance(layer, SelectiveSSMBlock):
-                    h, _ = layer(h)
-                else:
-                    h = layer(h)
-
-            h = self.final_norm(h)
-            logits = self.lm_head(h)
-
+                h = layer(h)
+            logits = self.lm_head(self.final_norm(h))
             loss = None
             if targets is not None:
-                ce_loss = F.cross_entropy(
-                    logits.view(-1, self.config.vocab_size),
-                    targets.view(-1),
-                )
-                # Регуляризатор экономии энергии: поощряет модель не гонять цикл мысли на простых словах
-                energy_penalty = 0.01 * reasoning_stats["mean_complexity"]
-                loss = ce_loss + energy_penalty
+                ce = F.cross_entropy(logits.float().reshape(-1, logits.size(-1)), targets.reshape(-1),
+                                     ignore_index=-100)
+                # Раньше «энергетический штраф» был числом float без градиента и ни на что не влиял.
+                # Теперь бюджет вычислений задаётся router_capacity, а роутер учится через aux-лосс.
+                loss = ce + self.config.router_aux_coef * aux
+                stats["ce_loss"] = ce.detach()
+                stats["router_aux"] = aux.detach()
+            return logits, loss, stats
 
-            return logits, loss, reasoning_stats
+        # ------------------------------------------------ генерация с кэшем
+
+        def init_cache(self, batch: int, device=None, dtype=None):
+            device = device or self.tok_embeddings.weight.device
+            dtype = dtype or self.tok_embeddings.weight.dtype
+            return {
+                "encoder": [l.init_cache(batch, device, dtype) for l in self.encoder],
+                "core": self.core.init_cache(batch, device, dtype),
+                "decoder": [l.init_cache(batch, device, dtype) for l in self.decoder],
+            }
+
+        @torch.no_grad()
+        def step(self, token_ids: torch.Tensor, cache) -> torch.Tensor:
+            """Один токен на строку (b,) -> логиты (b, V). Память на токен не растёт (SSM) / O(W) (внимание)."""
+            h = self.tok_embeddings(token_ids)
+            for layer, c in zip(self.encoder, cache["encoder"]):
+                h = layer.step(h, c)
+            h = self.core.step(h, cache["core"])
+            for layer, c in zip(self.decoder, cache["decoder"]):
+                h = layer.step(h, c)
+            return self.lm_head(self.final_norm(h))
+
+        @torch.no_grad()
+        def generate(self, input_ids: torch.Tensor, max_new_tokens: int = 100, temperature: float = 0.8,
+                     top_k: int = 50, top_p: float = 0.95, repetition_penalty: float = 1.1,
+                     eos_id: Optional[int] = None) -> torch.Tensor:
+            was_training = self.training
+            self.eval()
+            b, l0 = input_ids.shape
+            cache = self.init_cache(b)
+            logits = None
+            for t in range(l0):                       # префилл (пошагово — просто и точно)
+                logits = self.step(input_ids[:, t], cache)
+            out = input_ids
+            finished = torch.zeros(b, dtype=torch.bool, device=input_ids.device)
+            for _ in range(max_new_tokens):
+                logits = logits.float()
+                if repetition_penalty != 1.0:
+                    seen = torch.gather(logits, 1, out)
+                    seen = torch.where(seen > 0, seen / repetition_penalty, seen * repetition_penalty)
+                    logits = logits.scatter(1, out, seen)
+                if temperature <= 0:
+                    nxt = logits.argmax(dim=-1)
+                else:
+                    logits = logits / temperature
+                    if top_k and top_k < logits.size(-1):
+                        kth = logits.topk(top_k, dim=-1).values[:, -1:]
+                        logits = logits.masked_fill(logits < kth, float("-inf"))
+                    if top_p < 1.0:
+                        sorted_logits, sorted_idx = logits.sort(dim=-1, descending=True)
+                        cum = torch.softmax(sorted_logits, dim=-1).cumsum(dim=-1)
+                        remove = cum - torch.softmax(sorted_logits, dim=-1) > top_p
+                        sorted_logits = sorted_logits.masked_fill(remove, float("-inf"))
+                        logits = torch.full_like(logits, float("-inf")).scatter(1, sorted_idx, sorted_logits)
+                    nxt = torch.multinomial(torch.softmax(logits, dim=-1), 1).squeeze(-1)
+                if eos_id is not None:
+                    nxt = torch.where(finished, torch.full_like(nxt, eos_id), nxt)
+                    finished |= nxt == eos_id
+                out = torch.cat([out, nxt[:, None]], dim=1)
+                if eos_id is not None and bool(finished.all()):
+                    break
+                logits = self.step(nxt, cache)
+            self.train(was_training)
+            return out
+
+        # ------------------------------------------------ экспорт
+
+        @torch.no_grad()
+        def export_packed(self) -> Dict[str, np.ndarray]:
+            """Троичные матрицы -> 5 тритов в байт (+gamma), остальное -> float16."""
+            packed: Dict[str, np.ndarray] = {}
+            ternary_weights = set()
+            for name, mod in self.named_modules():
+                if isinstance(mod, BitLinear158) and mod.ternary:
+                    trits, gamma = mod.export_ternary()
+                    data, shape = pack_ternary_matrix(trits)
+                    packed[f"{name}.weight.packed"] = data
+                    packed[f"{name}.weight.shape"] = np.array(shape, dtype=np.int64)
+                    packed[f"{name}.weight.gamma"] = np.array([gamma], dtype=np.float32)
+                    ternary_weights.add(f"{name}.weight")
+            for name, t in self.state_dict().items():
+                if name in ternary_weights or name == "lm_head.weight":   # lm_head связан с эмбеддингом
+                    continue
+                packed[name] = t.detach().float().cpu().numpy().astype(np.float16)
+            return packed
 
 
 # =============================================================================
-# РАЗДЕЛ 2. АВТОНОМНОЕ МАТЕМАТИЧЕСКОЕ ЯДРО И ВЕРИФИКАТОР НА ЧИСТОМ NUMPY
+# РАЗДЕЛ 2. АВТОНОМНОЕ ЯДРО НА ЧИСТОМ NUMPY
 # =============================================================================
-# Позволяет запустить живую проверку троичного сложения без умножений,
-# маршрутизации глубины, цикла скрытого мышления и сходимости градиентного обучения
-# на любой машине без GPU и даже без установленного PyTorch.
 
 def quantize_weights_b158_numpy(w: np.ndarray, eps: float = 1e-6) -> Tuple[np.ndarray, float, float]:
     """
-    Квантование матрицы весов до троичного набора {-1, 0, +1} по формуле BitNet b1.58:
-        gamma = mean(|W|)
-        W_ternary = Clip(Round(W / gamma), -1, +1)
-    Возвращает троичную матрицу, коэффициент масштаба gamma и долю нулевых весов (разреженность).
+    Квантование BitNet b1.58:  gamma = mean(|W|),  W_t = Clip(Round(W / gamma), -1, +1).
+    Возвращает троичную матрицу int8, gamma и долю нулей.
     """
     gamma = float(max(np.mean(np.abs(w)), eps))
     w_ternary = np.clip(np.round(w / gamma), -1.0, 1.0).astype(np.int8)
-    sparsity = float(np.mean(w_ternary == 0))
-    return w_ternary, gamma, sparsity
+    return w_ternary, gamma, float(np.mean(w_ternary == 0))
 
 
 def ternary_add_only_linear(x: np.ndarray, w_ternary: np.ndarray, gamma: float) -> np.ndarray:
     """
-    Демонстрация вычисления линейного слоя БЕЗ единого матричного умножения весов:
-        y_j = gamma * ( sum_{i: W_{j,i} == +1} x_i  -  sum_{i: W_{j,i} == -1} x_i )
-    Нулевые веса (W_{j,i} == 0) полностью пропускаются!
+    Демонстрация: линейный слой без умножений на веса
+        y_j = gamma * (sum_{W_ji = +1} x_i - sum_{W_ji = -1} x_i).
+    Это показывает принцип для специализированного железа/ядер (например, bitnet.cpp).
+    В NumPy/PyTorch на обычном CPU/GPU это всё равно считается через умножения — выигрыш
+    в скорости дают только специальные ядра, а не сама формула.
     """
     pos_mask = (w_ternary == 1)
     neg_mask = (w_ternary == -1)
     out = np.zeros((x.shape[0], w_ternary.shape[0]), dtype=np.float32)
     for j in range(w_ternary.shape[0]):
-        pos_sum = x[:, pos_mask[j]].sum(axis=1) if np.any(pos_mask[j]) else 0.0
-        neg_sum = x[:, neg_mask[j]].sum(axis=1) if np.any(neg_mask[j]) else 0.0
-        out[:, j] = (pos_sum - neg_sum) * gamma
+        out[:, j] = (x[:, pos_mask[j]].sum(axis=1) - x[:, neg_mask[j]].sum(axis=1)) * gamma
     return out
+
+
+def pack_ternary_matrix(w_ternary: np.ndarray) -> Tuple[np.ndarray, Tuple[int, ...]]:
+    """Упаковка 5 тритов в 1 байт (3^5 = 243 < 256) — 1.6 бита на вес."""
+    shape = tuple(int(s) for s in w_ternary.shape)
+    flat = w_ternary.ravel().astype(np.int16) + 1
+    pad_len = (5 - flat.size % 5) % 5
+    if pad_len:
+        flat = np.concatenate([flat, np.ones(pad_len, dtype=np.int16)])
+    powers = np.array([1, 3, 9, 27, 81], dtype=np.int16)
+    packed = (flat.reshape(-1, 5) * powers).sum(axis=1).astype(np.uint8)
+    return packed, shape
+
+
+def unpack_ternary_matrix(packed: np.ndarray, shape: Tuple[int, ...]) -> np.ndarray:
+    n_total = int(np.prod(shape))
+    val = packed.astype(np.int16)[:, None]
+    powers = np.array([1, 3, 9, 27, 81], dtype=np.int16)
+    trits = ((val // powers) % 3) - 1
+    return trits.ravel()[:n_total].reshape(shape).astype(np.int8)
+
+
+def _rms(x: np.ndarray, eps: float = 1e-6) -> Tuple[np.ndarray, np.ndarray]:
+    r = np.sqrt(np.mean(x * x, axis=-1, keepdims=True) + eps)
+    return x / r, r
+
+
+def _rms_backward(dy: np.ndarray, y: np.ndarray, r: np.ndarray) -> np.ndarray:
+    """Градиент y = x / rms(x):  dx = (dy - y * mean(dy * y)) / r."""
+    return (dy - y * np.mean(dy * y, axis=-1, keepdims=True)) / r
+
+
+def _sigmoid(x: np.ndarray) -> np.ndarray:
+    return 1.0 / (1.0 + np.exp(-np.clip(x, -30.0, 30.0)))
+
+
+def _softmax(x: np.ndarray) -> np.ndarray:
+    e = np.exp(x - np.max(x, axis=-1, keepdims=True))
+    return e / np.sum(e, axis=-1, keepdims=True)
 
 
 class NumpySLRNetPrototype:
     """
-    Полностью рабочий микро-прототип SLR-Net на NumPy с аналитическим обратным распространением
-    ошибки (Backpropagation + Straight-Through Estimator) для демонстрации обучения и работы
-    скрытого когнитивного цикла.
+    Микро-прототип SLR-Net на NumPy с ТОЧНЫМ ручным обратным распространением.
+    Прямой проход:
+      x = E[tok] -> SSM: s_t = a*s_{t-1} + (1-a)*tanh(rms(x_t) W_ssm^T),  h = x + s
+      роутер p = sigmoid(h w_r + b_r); токены с p > 0.5 идут в цикл мышления:
+        m = память (top-2 по ключам);  z_{k+1} = z_k + 0.5 * tanh(rms(z_k + 0.3 m) W_think^T)
+      z_final = h + p * (z_K - h);  logits = rms(z_final) E^T  (связанные веса)
+    Лосс: кросс-энтропия + router_coef * MSE(p, подсказки сложности).
+    Квантование весов — STE (градиент по эффективному весу передаётся мастер-весу).
+    Метод gradient_check() сверяет аналитические градиенты с численными.
     """
-    def __init__(self, vocab_size: int = 64, d_model: int = 48, memory_slots: int = 128, seed: int = 42):
+
+    PARAMS = ("embed", "w_ssm", "w_think", "w_router", "b_router", "mem_keys", "mem_vals")
+
+    def __init__(self, vocab_size: int = 64, d_model: int = 48, memory_slots: int = 128,
+                 latent_steps: int = 3, seed: int = 42, quantize: bool = True,
+                 dtype=np.float32):
         rng = np.random.default_rng(seed)
-        self.vocab_size = vocab_size
-        self.d_model = d_model
-        self.memory_slots = memory_slots
+        self.vocab_size, self.d_model, self.memory_slots = vocab_size, d_model, memory_slots
+        self.latent_steps, self.quantize, self.dtype = latent_steps, quantize, dtype
+        self.decay, self.router_coef = 0.75, 0.25
+        s = 1.0 / math.sqrt(d_model)
+        self.embed = (rng.standard_normal((vocab_size, d_model)) * 0.15).astype(dtype)
+        self.w_ssm = (rng.standard_normal((d_model, d_model)) * s).astype(dtype)
+        self.w_think = (rng.standard_normal((d_model, d_model)) * s).astype(dtype)
+        self.w_router = (rng.standard_normal(d_model) * 0.2).astype(dtype)
+        self.b_router = np.array([0.1], dtype=dtype)
+        self.mem_keys = (rng.standard_normal((memory_slots, d_model)) * s).astype(dtype)
+        self.mem_vals = (rng.standard_normal((memory_slots, d_model)) * 0.15).astype(dtype)
+        self._adam_m = {k: np.zeros_like(getattr(self, k)) for k in self.PARAMS}
+        self._adam_v = {k: np.zeros_like(getattr(self, k)) for k in self.PARAMS}
+        self._t = 0
 
-        # Входные/выходные эмбеддинги (Weight Tying)
-        self.embed = (rng.standard_normal((vocab_size, d_model)) * 0.15).astype(np.float32)
-        # Мастер-веса восходящего SSM-кодировщика и рекуррентного когнитивного ядра (квантуются в {-1,0,+1})
-        self.w_ssm = (rng.standard_normal((d_model, d_model)) / math.sqrt(d_model)).astype(np.float32)
-        self.w_think = (rng.standard_normal((d_model, d_model)) / math.sqrt(d_model)).astype(np.float32)
-        # Роутер сложности токена (Mixture-of-Depths)
-        self.w_router = (rng.standard_normal((d_model, 1)) * 0.2).astype(np.float32)
-        self.b_router = np.array([-0.1], dtype=np.float32)
-        # Внешняя индексированная память фактов (Key-Value)
-        self.mem_keys = (rng.standard_normal((memory_slots, d_model)) / math.sqrt(d_model)).astype(np.float32)
-        self.mem_vals = (rng.standard_normal((memory_slots, d_model)) * 0.15).astype(np.float32)
+    def _eff(self, w: np.ndarray) -> Tuple[np.ndarray, float]:
+        if not self.quantize:
+            return w, 0.0
+        w_t, gamma, sparsity = quantize_weights_b158_numpy(w)
+        return w_t.astype(self.dtype) * self.dtype(gamma), sparsity
 
-    @staticmethod
-    def rms_norm(x: np.ndarray, eps: float = 1e-6) -> np.ndarray:
-        rms = np.sqrt(np.mean(x * x, axis=-1, keepdims=True) + eps)
-        return x / rms
-
-    @staticmethod
-    def sigmoid(x: np.ndarray) -> np.ndarray:
-        return 1.0 / (1.0 + np.exp(-np.clip(x, -20.0, 20.0)))
-
-    @staticmethod
-    def softmax(x: np.ndarray) -> np.ndarray:
-        shifted = x - np.max(x, axis=-1, keepdims=True)
-        exps = np.exp(shifted)
-        return exps / np.sum(exps, axis=-1, keepdims=True)
-
-    def forward_and_train_step(
-        self,
-        tokens: np.ndarray,
-        targets: np.ndarray,
-        token_complexity_hints: np.ndarray,
-        lr: float = 0.05
-    ) -> Dict[str, float]:
-        """
-        Выполняет полный прямой проход (с троичным сложением без умножений, сжатием состояния SSM,
-        маршрутизацией глубины и латентным циклом Coconut) + шаг градиентного обучения со STE.
-        """
-        seq_len = len(tokens)
-        x = self.embed[tokens]  # [L, D]
-
-        # 1. Квантование весов в {-1, 0, +1}
-        w_ssm_tern, gamma_ssm, sparsity_ssm = quantize_weights_b158_numpy(self.w_ssm)
-        w_think_tern, gamma_think, sparsity_think = quantize_weights_b158_numpy(self.w_think)
-
-        # 2. Линейное рекуррентное сжатие контекста (Selective SSM за O(1) памяти)
-        x_norm = self.rms_norm(x)
-        ssm_proj = ternary_add_only_linear(x_norm, w_ssm_tern, gamma_ssm)
-        h_ssm = np.zeros_like(x)
-        state = np.zeros(self.d_model, dtype=np.float32)
-        decay = 0.75
-        for t in range(seq_len):
-            state = decay * state + (1.0 - decay) * np.tanh(ssm_proj[t])
-            h_ssm[t] = x[t] + state
-
-        # 3. Маршрутизатор глубины (Mixture-of-Depths)
-        router_logits = h_ssm @ self.w_router + self.b_router
-        complexity_prob = self.sigmoid(router_logits)  # [L, 1]
-        active_mask = (complexity_prob[:, 0] > 0.48)
-
-        # 4. Скрытый когнитивный цикл (Coconut Continuous Thought) только для сложных токенов
-        z = h_ssm.copy()
-        latent_iterations_per_token = np.zeros(seq_len, dtype=np.int32)
-
-        for t in range(seq_len):
-            if not active_mask[t]:
-                # Простой токен (предлог/связка) пропускает цикл рассуждений!
-                continue
-
-            z_t = z[t:t+1]  # [1, D]
-            for step in range(4):
-                latent_iterations_per_token[t] += 1
-                # 4a. Запрос к внешней индексированной памяти фактов (Top-2 ячейки из 128)
-                scores = (z_t @ self.mem_keys.T)[0]
-                top_idx = np.argpartition(scores, -2)[-2:]
-                top_w = self.softmax(scores[top_idx])
-                mem_read = (top_w[:, None] * self.mem_vals[top_idx]).sum(axis=0, keepdims=True)
-
-                # 4b. Троичный шаг рассуждения без умножений
-                z_norm = self.rms_norm(z_t + 0.3 * mem_read)
-                delta_z = np.tanh(ternary_add_only_linear(z_norm, w_think_tern, gamma_think))
-                z_t = z_t + 0.5 * delta_z
-
-                # Проверка сходимости мысли (если вектор стабилизировался — досрочный выход)
-                if float(np.mean(np.abs(delta_z))) < 0.08 and step >= 1:
+    def forward(self, tokens: np.ndarray, early_exit: bool = True) -> Dict[str, object]:
+        L = len(tokens)
+        w_ssm, sp_ssm = self._eff(self.w_ssm)
+        w_think, sp_think = self._eff(self.w_think)
+        x = self.embed[tokens]
+        xn, r1 = _rms(x)
+        a = np.tanh(xn @ w_ssm.T)
+        s = np.zeros_like(x)
+        prev = np.zeros(self.d_model, dtype=x.dtype)
+        for t in range(L):
+            prev = self.decay * prev + (1.0 - self.decay) * a[t]
+            s[t] = prev
+        h = x + s
+        p = _sigmoid(h @ self.w_router + self.b_router[0])
+        active = p > 0.5
+        z_final = h.copy()
+        loops: Dict[int, Dict[str, object]] = {}
+        for t in np.nonzero(active)[0]:
+            z0 = h[t]
+            scores = self.mem_keys @ z0
+            top = np.argpartition(scores, -2)[-2:]
+            w_mem = _softmax(scores[top])
+            m = w_mem @ self.mem_vals[top]
+            zs, steps = [z0], []
+            for k in range(self.latent_steps):
+                v = zs[-1] + 0.3 * m
+                vn, r = _rms(v)
+                th = np.tanh(vn @ w_think.T)
+                zs.append(zs[-1] + 0.5 * th)
+                steps.append((vn, r, th))
+                if early_exit and k >= 1 and float(np.mean(np.abs(th))) < 0.08:
                     break
+            z_final[t] = h[t] + p[t] * (zs[-1] - h[t])
+            loops[int(t)] = {"top": top, "w_mem": w_mem, "m": m, "zs": zs, "steps": steps}
+        hf, rf = _rms(z_final)
+        logits = hf @ self.embed.T
+        return {"tokens": tokens, "x": x, "xn": xn, "r1": r1, "a": a, "h": h, "p": p,
+                "active": active, "loops": loops, "z_final": z_final, "hf": hf, "rf": rf,
+                "logits": logits, "w_ssm_eff": w_ssm, "w_think_eff": w_think,
+                "sparsity": (sp_ssm + sp_think) / 2.0}
 
-            z[t] = h_ssm[t] + complexity_prob[t, 0] * (z_t[0] - h_ssm[t])
+    def loss_and_grads(self, tokens: np.ndarray, targets: np.ndarray, hints: np.ndarray,
+                       early_exit: bool = True) -> Tuple[float, Dict[str, np.ndarray], Dict[str, object]]:
+        c = self.forward(tokens, early_exit=early_exit)
+        L = len(tokens)
+        probs = _softmax(c["logits"])
+        nll = float(-np.mean(np.log(probs[np.arange(L), targets] + 1e-12)))
+        p, h = c["p"], c["h"]
+        router_mse = float(np.mean((p - hints) ** 2))
+        loss = nll + self.router_coef * router_mse
 
-        # 5. Вычисление выходных логитов через связанные веса словаря (Weight Tying)
-        h_final = self.rms_norm(z)
-        logits = h_final @ self.embed.T  # [L, V]
-        probs = self.softmax(logits)
-
-        # Кросс-энтропийный лосс языка + лосс обучения роутера сложности
-        nll_loss = float(-np.mean(np.log(probs[np.arange(seq_len), targets] + 1e-9)))
-        target_route = token_complexity_hints[:, None]
-        router_loss = float(np.mean((complexity_prob - target_route) ** 2))
-        total_loss = nll_loss + 0.25 * router_loss
-
-        # 6. Обратный проход (Backpropagation + Straight-Through Estimator для троичных весов)
+        g = {k: np.zeros_like(getattr(self, k)) for k in self.PARAMS}
         dlogits = probs.copy()
-        dlogits[np.arange(seq_len), targets] -= 1.0
-        dlogits /= seq_len
+        dlogits[np.arange(L), targets] -= 1.0
+        dlogits /= L
+        g["embed"] += dlogits.T @ c["hf"]
+        dzf = _rms_backward(dlogits @ self.embed, c["hf"], c["rf"])
 
-        # Градиент по таблице эмбеддингов и выходной проекции
-        d_embed = dlogits.T @ h_final
-        dh_final = dlogits @ self.embed
+        dh = dzf.copy()
+        dp = np.zeros(L, dtype=h.dtype)
+        w_think = c["w_think_eff"]
+        for t, lp in c["loops"].items():
+            zs, steps = lp["zs"], lp["steps"]
+            zK = zs[-1]
+            dp[t] = float(np.dot(dzf[t], zK - h[t]))
+            dh[t] = dzf[t] * (1.0 - p[t])
+            dz = p[t] * dzf[t]
+            dm = np.zeros(self.d_model, dtype=h.dtype)
+            for k in range(len(steps) - 1, -1, -1):
+                vn, r, th = steps[k]
+                du = 0.5 * dz * (1.0 - th * th)
+                g["w_think"] += np.outer(du, vn)
+                dv = _rms_backward(du @ w_think, vn, r)
+                dz = dz + dv
+                dm += 0.3 * dv
+            top, w_mem = lp["top"], lp["w_mem"]
+            g["mem_vals"][top] += np.outer(w_mem, dm)
+            dw = self.mem_vals[top] @ dm
+            dscore = w_mem * (dw - np.dot(w_mem, dw))
+            g["mem_keys"][top] += np.outer(dscore, zs[0])
+            dh[t] += dz + dscore @ self.mem_keys[top]
 
-        # Градиент по когнитивному ядру через STE (пропускаем градиент сквозь квантование)
-        dw_think = (dh_final * complexity_prob).T @ self.rms_norm(h_ssm)
-        dw_ssm = dh_final.T @ x_norm
+        dlogit_r = dp * p * (1.0 - p) + self.router_coef * 2.0 * (p - hints) / L * p * (1.0 - p)
+        g["w_router"] += h.T @ dlogit_r
+        g["b_router"][0] += float(np.sum(dlogit_r))
+        dh += np.outer(dlogit_r, self.w_router)
 
-        # Градиент по роутеру глубины
-        d_router_prob = 0.5 * (
-            np.sum(dh_final * (z - h_ssm), axis=-1, keepdims=True)
-            + 0.5 * (complexity_prob - target_route)
-        )
-        d_router_logits = d_router_prob * complexity_prob * (1.0 - complexity_prob)
-        dw_router = h_ssm.T @ d_router_logits
-        db_router = np.sum(d_router_logits, axis=0)
+        dx = dh.copy()
+        gs = np.zeros(self.d_model, dtype=h.dtype)
+        da = np.zeros_like(dh)
+        for t in range(L - 1, -1, -1):
+            gs = dh[t] + self.decay * gs
+            da[t] = (1.0 - self.decay) * gs
+        du = da * (1.0 - c["a"] ** 2)
+        g["w_ssm"] += du.T @ c["xn"]
+        dx += _rms_backward(du @ c["w_ssm_eff"], c["xn"], c["r1"])
+        np.add.at(g["embed"], tokens, dx)
+        return loss, g, {"nll": nll, "cache": c}
 
-        # Обновление параметров
-        self.embed -= lr * d_embed
-        for idx_pos, tok_id in enumerate(tokens):
-            self.embed[tok_id] -= lr * dh_final[idx_pos] * 0.5
-        self.w_think -= lr * dw_think
-        self.w_ssm -= lr * dw_ssm
-        self.w_router -= lr * dw_router
-        self.b_router -= lr * db_router
-
-        pred_tokens = np.argmax(logits, axis=-1)
-        accuracy = float(np.mean(pred_tokens == targets))
-
+    def train_step(self, tokens, targets, hints, lr: float = 0.01) -> Dict[str, float]:
+        loss, grads, info = self.loss_and_grads(tokens, targets, hints)
+        self._t += 1
+        b1, b2 = 0.9, 0.99
+        for k in self.PARAMS:
+            m = self._adam_m[k] = b1 * self._adam_m[k] + (1 - b1) * grads[k]
+            v = self._adam_v[k] = b2 * self._adam_v[k] + (1 - b2) * grads[k] ** 2
+            upd = (m / (1 - b1 ** self._t)) / (np.sqrt(v / (1 - b2 ** self._t)) + 1e-8)
+            setattr(self, k, (getattr(self, k) - lr * upd).astype(self.dtype))
+        c = info["cache"]
+        steps_per_tok = [len(lp["steps"]) for lp in c["loops"].values()]
         return {
-            "loss": total_loss,
-            "nll_loss": nll_loss,
-            "accuracy": accuracy,
-            "sparsity_think": sparsity_think,
-            "sparsity_ssm": sparsity_ssm,
-            "routed_fraction": float(np.mean(active_mask)),
-            "avg_latent_steps": float(np.mean(latent_iterations_per_token)),
+            "loss": loss, "nll": info["nll"],
+            "accuracy": float(np.mean(np.argmax(c["logits"], axis=-1) == targets)),
+            "routed_fraction": float(np.mean(c["active"])),
+            "avg_latent_steps": float(np.sum(steps_per_tok) / len(tokens)),
+            "sparsity": float(c["sparsity"]),
         }
+
+    # совместимость со старым именем метода
+    def forward_and_train_step(self, tokens, targets, token_complexity_hints, lr: float = 0.01):
+        return self.train_step(tokens, targets, token_complexity_hints, lr)
+
+    def gradient_check(self, tokens, targets, hints, n_checks: int = 6, eps: float = 1e-6,
+                       seed: int = 0) -> float:
+        """Сравнивает аналитический градиент с численным (центральная разность). Возвращает max отн. ошибку."""
+        assert not self.quantize, "Градиент проверяется на непрерывной (неквантованной) версии сети"
+        rng = np.random.default_rng(seed)
+        _, grads, _ = self.loss_and_grads(tokens, targets, hints, early_exit=False)
+        worst = 0.0
+        for name in self.PARAMS:
+            param = getattr(self, name)
+            for _ in range(n_checks):
+                idx = tuple(int(rng.integers(0, s)) for s in param.shape)
+                if name == "embed" and rng.random() < 0.7:     # чаще проверяем реально использованные строки
+                    idx = (int(rng.choice(tokens)),) + idx[1:]
+                old = param[idx]
+                param[idx] = old + eps
+                lp, _, _ = self.loss_and_grads(tokens, targets, hints, early_exit=False)
+                param[idx] = old - eps
+                lm, _, _ = self.loss_and_grads(tokens, targets, hints, early_exit=False)
+                param[idx] = old
+                num = (lp - lm) / (2 * eps)
+                ana = grads[name][idx]
+                rel = abs(num - ana) / max(1e-7, abs(num) + abs(ana))
+                if abs(num) + abs(ana) > 1e-9:
+                    worst = max(worst, rel)
+        return worst
 
 
 def calculate_hardware_footprint(config: SLRNetConfig) -> Dict[str, float]:
     """
-    Точный инженерный расчёт объёма памяти и энергопотребления модели SLR-Net (300M)
-    по сравнению с классическим 70B FP16 Трансформером.
+    Честный подсчёт параметров и памяти для заданной конфигурации (формулы совпадают с PyTorch-
+    моделью один в один — это проверяется в tests/). Ничего не «забыто»: в первой версии не
+    учитывалась память фактов (84 млн параметров) и неверно считался размер SSM-блока.
     """
-    # 1. Словарь (16384 * 1024) в INT8 = 16.78 МБ
-    vocab_params = config.vocab_size * config.d_model
-    vocab_bytes = vocab_params * 1  # INT8 хранение таблицы морфем
+    D, V, di, N = config.d_model, config.vocab_size, config.d_inner, config.d_state
+    H, P, K = config.ssm_nheads, config.ssm_headdim, config.d_conv
+    conv_dim = di + 2 * N
+    hd, Hq, Hkv, Fh = config.head_dim, config.n_heads, config.n_kv_heads, config.mlp_hidden
 
-    # 2. Суммарное число троичных параметров в восходящем, когнитивном и нисходящем блоках
-    # Каждый блок SSM имеет ~ 6 * d_model^2 параметров, блок Attention ~ 4 * d_model^2
-    params_per_ssm = 6 * (config.d_model ** 2)
-    params_per_attn = 4 * (config.d_model ** 2)
+    ssm_tern = D * (di + conv_dim) + di * D
+    ssm_fp = D + (D * H + H) + (conv_dim * K + conv_dim) + 2 * H + di
+    attn_tern = D * (Hq + 2 * Hkv) * hd + Hq * hd * D
+    attn_fp = D + Hq * hd
+    if config.mlp_ratio > 0:
+        attn_tern += 2 * D * Fh
+        attn_fp += D + Fh
 
-    total_ssm_blocks = 6 + config.n_reasoning_layers + 2
-    total_attn_blocks = 2 + 2
-    core_ternary_params = (
-        total_ssm_blocks * params_per_ssm + total_attn_blocks * params_per_attn
-    )
-    # 1.58 бита на параметр = ~0.2 байта на вес при плотной упаковке (5 троичных весов в 1 байте, т.к. 3^5 = 243 < 256)
-    core_bytes = core_ternary_params / 5.0
+    kinds = layer_kinds(config.n_encoder_layers, config.encoder_attn_every) + \
+        layer_kinds(config.n_decoder_layers, config.decoder_attn_every)
+    n_ssm = kinds.count("ssm") + config.n_reasoning_layers
+    n_attn = kinds.count("attn")
 
-    total_core_params = vocab_params + core_ternary_params
-    total_core_mb = (vocab_bytes + core_bytes) / (1024 ** 2)
+    mem_tern = D * config.memory_key_dim
+    mem_fp = D + 2 * config.memory_keys * (config.memory_key_dim // 2) + 1
+    mem_values = config.memory_slots * D
+    core_fp = (D + 1) + config.max_latent_steps * D
 
-    # Состояние контекста (вместо KV-кэша) для диалога в 100 000 токенов:
-    # В SSM состояние фиксировано: d_inner * d_state * 2 байта на слой
-    ssm_state_bytes = (6 + 2) * config.d_inner * config.d_state * 2
-    # В 4 слоях локального внимания хранится только окно 256 токенов
-    local_kv_bytes = 4 * 2 * config.window_size * config.d_model * 2
-    context_100k_mb = (ssm_state_bytes + local_kv_bytes) / (1024 ** 2)
+    ternary = n_ssm * ssm_tern + n_attn * attn_tern + mem_tern
+    fp_small = n_ssm * ssm_fp + n_attn * attn_fp + mem_fp + core_fp + D
+    embedding = V * D
+    total = ternary + fp_small + embedding + mem_values
 
+    mb = 1024.0 ** 2
+    packed_mb = (ternary / 5.0 + 2 * fp_small + 2 * embedding + 2 * mem_values) / mb
+    fp16_mb = 2.0 * total / mb
+
+    # Память на генерацию (кэш) — не зависит от длины контекста
+    ssm_state_layers = kinds.count("ssm") + config.n_reasoning_layers * config.max_latent_steps
+    ssm_cache = ssm_state_layers * (H * P * N * 4 + conv_dim * (K - 1) * 2)
+    attn_cache = n_attn * 2 * config.window_size * Hkv * hd * 2
     return {
-        "total_core_params_millions": total_core_params / 1e6,
-        "core_memory_mb": total_core_mb,
-        "context_100k_memory_mb": context_100k_mb,
-        "transformer_70b_vram_gb": 140.0,
-        "transformer_70b_kv_100k_gb": 32.0,
+        "total_params_millions": total / 1e6,
+        "ternary_params_millions": ternary / 1e6,
+        "embedding_params_millions": embedding / 1e6,
+        "memory_params_millions": mem_values / 1e6,
+        "other_fp_params_millions": fp_small / 1e6,
+        "packed_model_mb": packed_mb,
+        "fp16_model_mb": fp16_mb,
+        "generation_cache_mb": (ssm_cache + attn_cache) / mb,
     }
 
 
 def run_verification_suite() -> None:
-    """Запускает полную проверку математики, квантования и цикла обучения SLR-Net."""
+    """Самопроверка: математика квантования, точность градиентов, обучение, PyTorch-модель."""
     print("=" * 78)
-    print("ЗАПУСК ВЕРИФИКАЦИИ АРХИТЕКТУРЫ SLR-Net (Sparse Latent-Reasoning Network)")
+    print("САМОПРОВЕРКА АРХИТЕКТУРЫ SLR-Net")
     print("=" * 78)
 
-    config = SLRNetConfig()
-    footprint = calculate_footprint = calculate_hardware_footprint(config)
-    print(f"\n[1] ИНЖЕНЕРНЫЙ РАСЧЁТ ПАМЯТИ МОНОЯЗЫЧНОГО ЯДРА (d_model={config.d_model}):")
-    print(f"    • Параметров в активном ядре (с эмбеддингами): {footprint['total_core_params_millions']:.1f} млн")
-    print(f"    • Размер упакованного ядра (5 тритов в 1 байте): {footprint['core_memory_mb']:.2f} МБ (помещается в L3 кэш CPU!)")
-    print(f"    • Память под контекст в 100 000 слов диалога : {footprint['context_100k_memory_mb']:.2f} МБ (против ~32 ГБ KV-кэша у 70B LLM)")
+    print("\n[1] ЧЕСТНЫЙ РАСЧЁТ РАЗМЕРА МОДЕЛИ ПО ПРЕСЕТАМ:")
+    for name in ("tiny", "small", "base", "large"):
+        fp = calculate_hardware_footprint(make_config(name))
+        print(f"    • {name:5s}: {fp['total_params_millions']:7.1f} млн параметров "
+              f"(троичных {fp['ternary_params_millions']:.1f}, эмбеддинг {fp['embedding_params_millions']:.1f}, "
+              f"память фактов {fp['memory_params_millions']:.1f}) | "
+              f"упаковано ≈ {fp['packed_model_mb']:.0f} МБ (FP16: {fp['fp16_model_mb']:.0f} МБ) | "
+              f"кэш генерации {fp['generation_cache_mb']:.1f} МБ")
 
-    # Проверка тождественности без-умножительного сумматора и матричного произведения с {-1, 0, +1}
     rng = np.random.default_rng(7)
     x_test = rng.standard_normal((8, 64)).astype(np.float32)
-    w_test = rng.standard_normal((32, 64)).astype(np.float32)
-    w_tern, gamma, sparsity = quantize_weights_b158_numpy(w_test)
-
-    y_add_only = ternary_add_only_linear(x_test, w_tern, gamma)
+    w_tern, gamma, sparsity = quantize_weights_b158_numpy(rng.standard_normal((32, 64)).astype(np.float32))
+    y_add = ternary_add_only_linear(x_test, w_tern, gamma)
     y_ref = (x_test @ w_tern.T.astype(np.float32)) * gamma
-    max_diff = float(np.max(np.abs(y_add_only - y_ref)))
+    packed, shape = pack_ternary_matrix(w_tern)
+    print("\n[2] ТРОИЧНЫЙ СУММАТОР И УПАКОВКА:")
+    print(f"    • Нулевых весов: {sparsity * 100:.1f}% | расхождение сумматора с matmul: "
+          f"{float(np.max(np.abs(y_add - y_ref))):.1e}")
+    print(f"    • Упаковка 5 тритов/байт обратима: {np.array_equal(unpack_ternary_matrix(packed, shape), w_tern)} "
+          f"({w_tern.size} весов -> {packed.size} байт)")
 
-    print("\n[2] ПРОВЕРКА ТРОИЧНОГО СУММАТОРА BitLinear b1.58 (БЕЗ ОПЕРАЦИЙ УМНОЖЕНИЯ):")
-    print(f"    • Доля полностью нулевых синапсов (Sparsity) : {sparsity * 100:.1f}% (пропускаются аппаратно)")
-    print(f"    • Максимальное расхождение сумматора с эталоном: {max_diff:.2e} (строгое совпадение)")
+    vocab = ["<pad>", "почему", "небо", "синее", "?", "потому", "что", "атмосфера", "рассеивает",
+             "короткие", "синие", "волны", "солнечного", "света", "."]
+    seq = np.arange(1, len(vocab), dtype=np.int64)
+    inp, tgt = seq[:-1], seq[1:]
+    hints = np.array([0, 0, 1, 1, 0, 0, 1, 1, 0, 0, 1, 0, 0], dtype=np.float64)
 
-    # Обучение микро-прототипа на русскоязычной логической фразе
-    vocab = [
-        "<pad>", "почему", "небо", "синее", "?", "потому", "что", "атмосфера",
-        "рассеивает", "короткие", "синие", "волны", "солнечного", "света", ".",
-        "привет", "как", "дела", "отлично", "спасибо"
-    ]
-    # Дополняем словарь до 64 морфем
-    while len(vocab) < 64:
-        vocab.append(f"морфема_{len(vocab)}")
-
-    # Предложение: "почему небо синее ? потому что атмосфера рассеивает короткие синие волны солнечного света ."
-    seq_ids = np.array([1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14], dtype=np.int32)
-    inp_ids = seq_ids[:-1]
-    tgt_ids = seq_ids[1:]
-    # Подсказка сложности для роутера: на вопросе "?" и ключевых смысловых узлах ("атмосфера", "рассеивает", "волны")
-    # требуется глубокий цикл мысли (1.0), а на связках ("потому", "что", ".") — быстрый проход (0.0)
-    complexity_hints = np.array([0, 0, 1, 1, 0, 0, 1, 1, 0, 0, 1, 0, 0], dtype=np.float32)
+    checker = NumpySLRNetPrototype(vocab_size=32, d_model=16, memory_slots=16, quantize=False,
+                                   dtype=np.float64, seed=3)
+    err = checker.gradient_check(inp, tgt, hints)
+    print("\n[3] ПРОВЕРКА ТОЧНОСТИ ОБРАТНОГО РАСПРОСТРАНЕНИЯ (аналитика vs численная производная):")
+    print(f"    • Максимальная относительная ошибка градиента: {err:.2e} "
+          f"({'OK' if err < 1e-4 else 'ОШИБКА'})")
 
     proto = NumpySLRNetPrototype(vocab_size=64, d_model=48, memory_slots=128)
-    print("\n[3] ТЕСТ ОБУЧЕНИЯ СО STRAIGHT-THROUGH ESTIMATOR (STE) И ЛАТЕНТНЫМ ЦИКЛОМ COCONUT:")
+    print("\n[4] ОБУЧЕНИЕ МИКРО-ПРОТОТИПА (STE + Adam) — запоминание одной фразы:")
     t0 = time.time()
-    for epoch in range(1, 121):
-        stats = proto.forward_and_train_step(inp_ids, tgt_ids, complexity_hints, lr=0.08)
-        if epoch in (1, 20, 60, 120):
-            print(
-                f"    • Эпоха {epoch:3d} | Loss: {stats['loss']:.4f} | "
-                f"Точность: {stats['accuracy']*100:5.1f}% | "
-                f"Токенов в цикле мысли: {stats['routed_fraction']*100:4.1f}% | "
-                f"Среднее число латентных тактов: {stats['avg_latent_steps']:.2f} | "
-                f"Нулевых весов: {stats['sparsity_think']*100:.1f}%"
-            )
-    elapsed = (time.time() - t0) * 1000.0
-    print(f"\n    Обучение 120 эпох на CPU завершено за {elapsed:.1f} мс.")
+    for epoch in range(1, 151):
+        st = proto.train_step(inp, tgt, hints.astype(np.float32), lr=0.01)
+        if epoch in (1, 25, 75, 150):
+            print(f"    • Эпоха {epoch:3d} | Loss {st['loss']:.4f} | Точность {st['accuracy'] * 100:5.1f}% | "
+                  f"в цикле мысли {st['routed_fraction'] * 100:4.1f}% | тактов/токен {st['avg_latent_steps']:.2f} | "
+                  f"нулей {st['sparsity'] * 100:.1f}%")
+    print(f"    (заняло {(time.time() - t0) * 1000:.0f} мс; это проверка, что градиенты текут, "
+          f"а не доказательство «разумности» — одну фразу запомнит любая сеть)")
+
+    if not TORCH_AVAILABLE:
+        print("\n[5] PyTorch не установлен — проверка полной модели пропущена (pip install torch).")
+        print("=" * 78)
+        return
+
+    torch.manual_seed(0)
+    cfg = make_config("tiny", vocab_size=256)
+    model = SLRNetLanguageModel(cfg)
+    ids = torch.randint(0, 256, (2, 80))
+    logits, loss, stats = model(ids[:, :-1], ids[:, 1:])
+    loss.backward()
+    model.eval()
+    with torch.no_grad():
+        a = torch.randint(0, 256, (1, 40))
+        b = a.clone()
+        b[0, 30] = (b[0, 30] + 1) % 256
+        leak = (model(a)[0][0, :30] - model(b)[0][0, :30]).abs().max().item()
+    n = model.num_params()
+    print("\n[5] PyTorch-МОДЕЛЬ (пресет tiny):")
+    print(f"    • Параметров: {n['total'] / 1e6:.2f} млн (совпадает с формулой: "
+          f"{abs(n['total'] - calculate_hardware_footprint(cfg)['total_params_millions'] * 1e6) < 1})")
+    print(f"    • Стартовый лосс {float(stats['ce_loss']):.2f} (ожидается ≈ ln V = {math.log(256):.2f})")
+    print(f"    • Утечка из будущего (каузальность): {leak:.1e} (должно быть 0)")
+    print(f"    • Средняя глубина мышления на токен (top-k): {float(stats['core_depth_mean']):.2f}")
     print("=" * 78)
 
 
