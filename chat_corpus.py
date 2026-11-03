@@ -1169,7 +1169,7 @@ def build_dataset(mined: List[dict], seed: int = 11, n_compose: int = 30000, min
         last = turns[-1][1]
         turns[-1][1] = (last[:1].lower() + last[1:]).rstrip(".!?")
         if turns[-1][1] != last:
-            probes.append({"cat": "небрежный ввод", "turns": turns, "check": p["check"]})
+            probes.append({"cat": "небрежный ввод", "turns": turns, "check": p["check"], "from": p["cat"]})
     del sloppy_rng
 
     # Выбор из 5: правильный ответ + 4 ответа на другие вопросы; правильный вопрос + 4 других
@@ -1187,6 +1187,18 @@ def build_dataset(mined: List[dict], seed: int = 11, n_compose: int = 30000, min
                            "distractors": [p[1] for p in pick[:4]],
                            "other_contexts": [[["user", p[0]]] for p in pick[4:]]})
     rng.shuffle(choice)
+    # Защита от утечки: отложенная ручная формулировка могла совпасть с фразой из шаблонов (например,
+    # «Какой у меня возраст?»). Такие вопросы из проверки убираем — проверяем только то, чего модель не видела.
+    seen = {t[1] for r in train for t in r["turns"] if t[0] == "user"}
+
+    def unseen(turns) -> bool:
+        return turns[-1][1] not in seen
+
+    probes = [p for p in probes if not p["cat"].startswith("ручные") or unseen(p["turns"])]
+    probes = [p for p in probes if not (p["cat"] == "небрежный ввод" and p["from"].startswith("ручные"))
+              or unseen(p["turns"])]
+    choice = [c for c in choice if not c["src"].startswith("ручные") or unseen(c["context"])]
+    open_eval = [r for r in open_eval if not r["src"].startswith("ручные") or unseen(r["turns"][:-1])]
     return {"sft_train": train, "sft_val": val, "probes": probes, "choice": choice, "open_eval": open_eval}
 
 

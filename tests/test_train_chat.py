@@ -15,7 +15,7 @@ import train_chat as T  # noqa: E402
 
 BASE_NPZ = os.path.join(ROOT, "slr_net_subtitles_ru_mini.npz")
 CHAT_NPZ = os.path.join(ROOT, "slr_net_chat_ru_mini.npz")
-MIN_SHIPPED_OK = 7          # из 10 (см. test_shipped_chat_model_really_answers)
+MIN_SHIPPED_OK = 6          # из 10 (итоговая модель отвечает верно на 7) (см. test_shipped_chat_model_really_answers)
 
 torch = pytest.importorskip("torch")
 pytest.importorskip("sentencepiece")

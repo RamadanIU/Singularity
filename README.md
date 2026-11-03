@@ -127,6 +127,17 @@ python train_lm.py sample --ckpt runs/small/model_packed.npz --prompt "Поче�
 `LD_PRELOAD=/usr/lib/x86_64-linux-gnu/libjemalloc.so.2` (`apt install libjemalloc2`). Готовый рецепт —
 в [TRAINING_RU_SUBTITLES.md](TRAINING_RU_SUBTITLES.md).
 
+### 6. Пост-тренинг: из продолжателя текста — в собеседника
+```bash
+python train_chat.py mine  --subs ru_subtitles.txt --ckpt slr_net_subtitles_ru_mini.npz   # пары «вопрос → ответ» + отбор моделью
+python train_chat.py build --out data/chat                                                 # ручные + шаблонные + добытые диалоги
+python train_chat.py sft   --base slr_net_subtitles_ru_mini.npz --data data/chat --out runs/chat_sft --compile
+python train_chat.py eval  --ckpt slr_net_subtitles_ru_mini.npz runs/chat_sft/best.pt --data data/chat
+python train_chat.py export --ckpt runs/chat_sft/best.pt --out slr_net_chat_ru_mini.npz
+```
+Есть и этап «поощрения и наказания» (`train_chat.py align`). На модели `mini` он итог не улучшил: почему —
+и все цифры до/после — в [TRAINING_CHAT_RU.md](TRAINING_CHAT_RU.md).
+
 ## Размеры моделей (пресеты)
 
 | Пресет | Параметров | из них троичных | эмбеддинг | память фактов | упакованный размер |
@@ -154,6 +165,9 @@ python -m pytest -q tests/test_mobile_html.py
 Консольный чат и режим «Обычная» мобильного чата — это **поисковые прототипы** (ответ берётся из
 памяти по совпадению слов, логика — правилами). Они хорошо показывают идеи, но сами не «понимают»
 новые вопросы. Настоящая генеративная модель — `slr_net_engine.py` + `train_lm.py`; её «ум» зависит
-прежде всего от объёма и качества текстов для обучения. Первая обученная версия
-(`slr_net_subtitles_ru_mini.npz`, режим «mini» в браузере) уже пишет связный русский текст в стиле
-субтитров, но это пока продолжатель текста, а не ассистент. Подробности и план — в [REVIEW.md](REVIEW.md).
+прежде всего от объёма и качества текстов для обучения. Предобученная версия
+(`slr_net_subtitles_ru_mini.npz`) пишет связный русский текст в стиле субтитров. После пост-тренинга
+(`slr_net_chat_ru_mini.npz`, режим «mini» в браузере) она стала собеседником: на 1 121 проверочной задаче
+с новыми именами и формулировками — 46% верных ответов против 5% до пост-тренинга. Знаний у неё мало,
+на незнакомые реплики она часто отвечает невпопад. Подробности — в [TRAINING_CHAT_RU.md](TRAINING_CHAT_RU.md)
+и [REVIEW.md](REVIEW.md).
