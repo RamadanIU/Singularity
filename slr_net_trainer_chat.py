@@ -1,35 +1,39 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
 """
-SLR-Net Subtitle Trainer, Epistemic Logic Engine & Natural Chat (`slr_net_trainer_chat.py`)
-===========================================================================================
+SLR-Net: поисковый чат-прототип с логическим модулем и троичной микро-сетью (`slr_net_trainer_chat.py`)
+=====================================================================================================
 
-Полноценный тренажёр на большом объёме киносубтитров (.txt / .srt), модуль логического
-рассуждения и честного признания незнания (Epistemic Humility) для архитектуры SLR-Net:
-- BitNet b1.58 (Ma et al., arXiv:2402.17764): троичные веса {-1, 0, +1}, вычисление без умножений.
-- Mamba Selective SSM (Gu & Dao, arXiv:2312.00752): линейное состояние контекста O(1).
-- Memory Layers / RETRO (arXiv:2412.09764, arXiv:2112.04426): внешняя быстрая память диалогов.
-- Mixture-of-Depths (arXiv:2404.02258) + Coconut (arXiv:2412.06769): динамический роутер
-  глубины и скрытый рекуррентный цикл латентного мышления.
+ЧТО ЭТО НА САМОМ ДЕЛЕ (важно для понимания):
+Этот файл — НЕ генеративная языковая модель, а поисковый (retrieval) чат-бот:
+  1. Вопрос пользователя сравнивается по словам/корням с вопросами из корпуса (`evaluate_epistemic_match`).
+  2. Если совпадение уверенное — выводится сохранённый ответ этой строки корпуса. Нейросеть при этом
+     «проигрывает» ответ с подсказкой копирования (`copy_bias`): к логиту нужного слова добавляется +5.5.
+     С copy_bias = 0 видно, что генерирует сама сеть (команда `/копия` в чате).
+  3. Логические задачи и арифметика решаются правилами (`EpistemicLogicEngine`) — это «инструмент»
+     (как калькулятор у больших LLM), а не обучение.
+Настоящая языковая модель для обучения на больших текстах — `slr_net_engine.py` + `train_lm.py`.
 
-Ключевые возможности этой версии:
-1. Универсальный загрузчик `.txt` и `.srt` файлов (`--corpus путь/к/файлу.txt`):
-   - Понимает как обычные текстовые файлы диалогов, так и сырые файлы киносубтитров (`.srt` / OpenSubtitles),
-     автоматически очищая таймкоды `00:01:10,120 --> ...` и склеивая соседние реплики героев в диалоговые пары.
-   - Позволяет дообучать модель на любом новом `.txt` файле прямо из чата командой `/обучить путь_к_файлу.txt`.
-2. Модуль логического мышления (`EpistemicLogicEngine`):
-   - Решает логические цепочки сравнения («Если А > Б, а Б > В, кто самый...»), условные силлогизмы
-     и числовые задачи, даже если их никогда не было в обучающем корпусе.
-3. Детектор границ знаний (Epistemic Humility — «умение говорить "я не знаю"»):
-   - Оценивает покрытие смысловых слов вопроса и долю неизвестных терминов.
-   - Если факта нет в памяти, модель НЕ выдумывает и не выдаёт чужой ответ, а честно объясняет,
-     какого именно знания ей не хватает, делает логический разбор вопроса и предлагает пользователю
-     научить её прямо в следующей реплике диалога!
+Компоненты нейросети (микро-версии идей):
+- BitNet b1.58 (arXiv:2402.17764): троичные веса {-1, 0, +1} с STE.
+- Линейная SSM-рекуррентность (идея Mamba, arXiv:2312.00752): состояние фиксированного размера.
+- Память диалогов (идея RETRO / Memory Layers, arXiv:2112.04426, arXiv:2412.09764).
+- Роутер глубины + скрытый цикл (идеи Mixture-of-Depths arXiv:2404.02258, Coconut arXiv:2412.06769).
+
+Возможности:
+1. Загрузчик `.txt` и `.srt` (`--corpus путь`): чистит таймкоды и склеивает реплики в пары «вопрос — ответ».
+2. Логический модуль: транзитивные сравнения («А быстрее Б, Б быстрее В — кто самый медленный?»)
+   и арифметика словами/цифрами (безопасный разбор, без eval).
+3. Честное «я не знаю»: если ключевых слов вопроса нет в словаре, модель не выдумывает ответ,
+   а предлагает научить её — новый факт добавляется в память МГНОВЕННО (без переобучения с нуля).
 """
 
 from __future__ import annotations
+
 import argparse
+import ast
 import math
+import operator
 import os
 import re
 import sys
@@ -100,6 +104,8 @@ SYNONYM_STEMS = {
     "врёш": ["совр", "правд", "знаеш"],
 }
 
+SPECIAL_TOKENS = ("<pad>", "<bos>", "<eos>", "<unk>")
+
 
 def format_natural_russian(tokens: List[str]) -> str:
     """Форматирует последовательность токенов в естественный русский текст с заглавными буквами и пунктуацией."""
@@ -110,7 +116,7 @@ def format_natural_russian(tokens: List[str]) -> str:
     capitalize_next = True
 
     for tok in tokens:
-        if tok in ("<pad>", "<bos>", "<eos>", "<unk>"):
+        if tok in SPECIAL_TOKENS:
             continue
 
         word = PROPER_NOUNS_MAP.get(tok, tok)
@@ -120,9 +126,7 @@ def format_natural_russian(tokens: List[str]) -> str:
         elif word and word[0].isalpha():
             capitalize_next = False
 
-        if tok in (".", "!", "?"):
-            capitalize_next = True
-        elif tok == "«":
+        if tok in (".", "!", "?", "«"):
             capitalize_next = True
 
         formatted_words.append(word)
@@ -137,83 +141,62 @@ def format_natural_russian(tokens: List[str]) -> str:
 # 2. УНИВЕРСАЛЬНЫЙ ПАРСЕР КИНОСУБТИТРОВ (.SRT / .TXT) И КНИЖНЫХ ДИАЛОГОВ
 # =============================================================================
 
+def _join_dialogue(pending: List[str]) -> Optional[str]:
+    if len(pending) < 2:
+        return None
+    q_part = pending[0].lstrip("—- ").strip()
+    a_part = " ".join(x.lstrip("—- ").strip() for x in pending[1:])
+    if not (q_part and a_part):
+        return None
+    if q_part[-1] not in ("?", "!", "."):
+        q_part += " ?"
+    return f"{q_part} {a_part}"
+
+
 def parse_subtitle_or_text_corpus(raw_text: str) -> List[str]:
     """
-    Универсальный парсер для обучения на любых файлах `.txt` или `.srt` (киносубтитры OpenSubtitles):
-    1. Очищает номера блоков субтитров, таймкоды `00:01:20,000 --> 00:01:24,000` и HTML-теги `<i>...</i>`.
-    2. Если в блоке субтитров две реплики через тире (`— Вопрос / — Ответ`), склеивает их в единую
-       диалоговую пару `Вопрос ? Ответ .`.
-    3. Если файл состоит из отдельных коротких строк-субтитров (по одной реплике на строку),
-       автоматически объединяет соседние реплики в диалоговые цепочки.
+    Парсер `.txt` / `.srt`:
+    1. Убирает номера блоков субтитров, таймкоды `00:01:20,000 --> 00:01:24,000`, HTML-теги и ремарки [смех].
+    2. Реплики через тире (`— Вопрос / — Ответ`) склеивает в пару `Вопрос ? Ответ`.
+    3. Короткие одиночные строки объединяет попарно в цепочки «стимул — ответ».
+    Строки, начинающиеся с `#`, — комментарии.
     """
-    # Убираем HTML-теги и звуковые ремарки в квадратных скобках [музыка], [смех]
     cleaned = re.sub(r"<[^>]+>", " ", raw_text)
     cleaned = re.sub(r"\[[^\]]+\]", " ", cleaned)
 
-    raw_lines = cleaned.splitlines()
     filtered_lines: List[str] = []
+    pending: List[str] = []
 
-    srt_Pending_Utterances: List[str] = []
-    in_srt_mode = ("-->" in raw_text)
-
-    for line in raw_lines:
+    for line in cleaned.splitlines():
         s = line.strip()
         if not s or s.startswith("#"):
-            if srt_Pending_Utterances:
-                if len(srt_Pending_Utterances) >= 2:
-                    q_part = srt_Pending_Utterances[0].lstrip("—- ").strip()
-                    a_part = " ".join(x.lstrip("—- ").strip() for x in srt_Pending_Utterances[1:])
-                    if q_part and a_part:
-                        if q_part[-1] not in ("?", "!", "."):
-                            q_part += " ?"
-                        filtered_lines.append(f"{q_part} {a_part}")
-                srt_Pending_Utterances = []
+            joined = _join_dialogue(pending)
+            if joined:
+                filtered_lines.append(joined)
+            pending = []
             continue
-
-        # Пропускаем чистые номера блоков SRT и строки таймкодов 00:00:00,000 --> ...
         if re.fullmatch(r"\d+", s):
             continue
         if "-->" in s or re.match(r"^\d{2}:\d{2}:\d{2}", s):
             continue
-
-        # Если строка начинается с тире диалога в блоке субтитров
-        if s.startswith("—") or s.startswith("- "):
-            srt_Pending_Utterances.append(s)
+        if s.startswith("—") or s.startswith("- ") or pending:
+            pending.append(s)
             continue
-
-        if srt_Pending_Utterances:
-            srt_Pending_Utterances.append(s)
-            continue
-
         filtered_lines.append(s)
 
-    if len(srt_Pending_Utterances) >= 2:
-        q_part = srt_Pending_Utterances[0].lstrip("—- ").strip()
-        a_part = " ".join(x.lstrip("—- ").strip() for x in srt_Pending_Utterances[1:])
-        if q_part and a_part:
-            if q_part[-1] not in ("?", "!", "."):
-                q_part += " ?"
-            filtered_lines.append(f"{q_part} {a_part}")
+    joined = _join_dialogue(pending)
+    if joined:
+        filtered_lines.append(joined)
 
-    # Проверяем: если строки уже содержат и реплику-стимул, и ответ (или длиннее 7 слов),
-    # оставляем их как готовые цепочки; если это короткие одиночные строки субтитров — спариваем соседние
     final_chains: List[str] = []
     i = 0
     while i < len(filtered_lines):
         cur = filtered_lines[i]
-        # Проверяем, есть ли внутри строки знак конца первой реплики ('?', '!', '.') не в самом конце
-        has_internal_split = False
-        for punct in ("?", "!", "."):
-            pos = cur.find(punct)
-            if 2 <= pos < len(cur) - 4:
-                has_internal_split = True
-                break
-
+        has_internal_split = any(2 <= cur.find(p) < len(cur) - 4 for p in ("?", "!", "."))
         if has_internal_split:
             final_chains.append(cur)
             i += 1
         elif i + 1 < len(filtered_lines):
-            # Склеиваем две последовательные реплики субтитров в пару «Стимул -> Ответ»
             nxt = filtered_lines[i + 1]
             if cur[-1] not in ("?", "!", "."):
                 cur += " ."
@@ -233,137 +216,202 @@ def parse_subtitle_or_text_corpus(raw_text: str) -> List[str]:
 # 3. МОДУЛЬ ЛОГИЧЕСКОГО МЫШЛЕНИЯ И ЭПИСТЕМИЧЕСКОЙ ОЦЕНКИ (ЧЕСТНОЕ «Я НЕ ЗНАЮ»)
 # =============================================================================
 
-RUSSIAN_NUM_WORDS = {
-    "ноль": 0, "нуля": 0, "один": 1, "одна": 1, "одного": 1, "два": 2, "две": 2, "двух": 2,
-    "три": 3, "трёх": 3, "четыре": 4, "четырёх": 4, "пять": 5, "пяти": 5,
-    "шесть": 6, "шести": 6, "семь": 7, "семи": 7, "восемь": 8, "восьми": 8,
-    "девять": 9, "девяти": 9, "десять": 10, "десяти": 10, "одиннадцать": 11,
-    "двенадцать": 12, "тринадцать": 13, "четырнадцать": 14, "пятнадцать": 15,
-    "шестнадцать": 16, "семнадцать": 17, "восемнадцать": 18, "девятнадцать": 19,
-    "двадцать": 20, "тридцать": 30, "сорок": 40, "пятьдесят": 50,
-    "шестьдесят": 60, "семьдесят": 70, "восемьдесят": 80, "девяносто": 90,
-    "сто": 100, "двести": 200, "триста": 300, "пятьсот": 500, "тысяча": 1000,
+# Числительные: значение и тип (единицы/десятки/сотни складываются, «тысяча»/«миллион» — множители)
+_NUM_UNITS = {
+    "ноль": 0, "нуля": 0, "один": 1, "одна": 1, "одно": 1, "одного": 1, "одну": 1, "два": 2, "две": 2,
+    "двух": 2, "три": 3, "трёх": 3, "трех": 3, "четыре": 4, "четырёх": 4, "четырех": 4, "пять": 5,
+    "пяти": 5, "шесть": 6, "шести": 6, "семь": 7, "семи": 7, "восемь": 8, "восьми": 8, "девять": 9,
+    "девяти": 9, "десять": 10, "десяти": 10, "одиннадцать": 11, "двенадцать": 12, "тринадцать": 13,
+    "четырнадцать": 14, "пятнадцать": 15, "шестнадцать": 16, "семнадцать": 17, "восемнадцать": 18,
+    "девятнадцать": 19, "двадцать": 20, "двадцати": 20, "тридцать": 30, "тридцати": 30, "сорок": 40,
+    "сорока": 40, "пятьдесят": 50, "шестьдесят": 60, "семьдесят": 70, "восемьдесят": 80,
+    "девяносто": 90, "сто": 100, "ста": 100, "двести": 200, "триста": 300, "четыреста": 400,
+    "пятьсот": 500, "шестьсот": 600, "семьсот": 700, "восемьсот": 800, "девятьсот": 900,
 }
+_NUM_MULTIPLIERS = {
+    "тысяча": 1000, "тысячи": 1000, "тысяч": 1000, "тысячу": 1000,
+    "миллион": 10 ** 6, "миллиона": 10 ** 6, "миллионов": 10 ** 6,
+}
+# совместимость со старым именем
+RUSSIAN_NUM_WORDS = dict(_NUM_UNITS, **_NUM_MULTIPLIERS)
+
+_OPS = {ast.Add: operator.add, ast.Sub: operator.sub, ast.Mult: operator.mul, ast.Div: operator.truediv}
+_ARITH_CUES = re.compile(r"сколько|посчитай|вычисли|реши|будет|равн|=|результат")
+
+
+def words_to_numbers(text: str) -> str:
+    """'двадцать пять тысяч триста' -> '25300'. Цифры, введённые пользователем, не трогает."""
+    out: List[str] = []
+    total, current, in_number = 0, 0, False
+
+    def flush() -> None:
+        nonlocal total, current, in_number
+        if in_number:
+            out.append(str(total + current))
+        total, current, in_number = 0, 0, False
+
+    for part in re.split(r"(\s+)", text):
+        word = part.strip(".,!?;:").lower()
+        if word in _NUM_UNITS:
+            current += _NUM_UNITS[word]
+            in_number = True
+        elif word in _NUM_MULTIPLIERS:
+            total += max(current, 1) * _NUM_MULTIPLIERS[word]
+            current, in_number = 0, True
+        elif part.isspace() and in_number:
+            continue
+        else:
+            flush()
+            out.append(part if not part.isspace() else part)
+            continue
+        tail = part[len(part.rstrip(".,!?;:")):]
+        if tail:
+            flush()
+            out.append(tail)
+    flush()
+    return " ".join(x for x in out if x and not x.isspace())
+
+
+def safe_arithmetic(expr: str):
+    """Вычисляет + - * / и скобки через разбор синтаксического дерева (eval не используется)."""
+    def ev(node):
+        if isinstance(node, ast.Expression):
+            return ev(node.body)
+        if isinstance(node, ast.Constant) and isinstance(node.value, (int, float)):
+            return node.value
+        if isinstance(node, ast.BinOp) and type(node.op) in _OPS:
+            return _OPS[type(node.op)](ev(node.left), ev(node.right))
+        if isinstance(node, ast.UnaryOp) and isinstance(node.op, (ast.USub, ast.UAdd)):
+            v = ev(node.operand)
+            return -v if isinstance(node.op, ast.USub) else v
+        raise ValueError("недопустимое выражение")
+    return ev(ast.parse(expr, mode="eval"))
+
+
+def _root_key(word: str) -> str:
+    """Грубый корень для сопоставления падежей: первая буква + 2 согласные (орёл/орла -> 'орл')."""
+    w = word.replace("ё", "е")
+    return w[0] + re.sub(r"[аеиоуыэюяьъй]", "", w[1:])[:2]
+
+
+# Измерение: (больше-слово, меньше-слово, прилагательное «максимума», прилагательное «минимума»)
+_COMPARISONS = [
+    ("быстрее", "медленнее", "быстр", "медлен"),
+    ("старше", "младше", "стар", "млад"),
+    ("тяжелее", "легче", "тяжел", "легк"),
+    ("выше", "ниже", "высок", "низк"),
+    ("сильнее", "слабее", "сильн", "слаб"),
+    ("больше", "меньше", "больш", "меньш"),
+    ("умнее", "глупее", "умн", "глуп"),
+    ("дороже", "дешевле", "дорог", "дешев"),
+    ("длиннее", "короче", "длин", "корот"),
+    ("богаче", "беднее", "богат", "бедн"),
+]
 
 
 class EpistemicLogicEngine:
     """
-    Отвечает за:
-    1. Аналитическое решение логических цепочек сравнения (транзитивность: A > B, B > C => A > C),
-       условных силлогизмов («Если А, то Б») и математических вычислений на русском языке.
-    2. Оценку границ собственных знаний модели (Epistemic Confidence):
-       обнаруживает неизвестные слова и понятия в вопросе пользователя и предотвращает галлюцинации.
-    3. Формулирование честного, осмысленного ответа «Я этого не знаю, но логически...» с возможностью
-       выучить новый факт прямо со слов собеседника в следующей реплике чата.
+    1. Решает транзитивные цепочки сравнения (A > B, B > C => A > C) через граф отношений:
+       честно сообщает, если данных не хватает или условие противоречиво.
+    2. Считает арифметику цифрами и словами (с приоритетом операций, без eval).
+    3. Формулирует честный ответ «я этого не знаю», когда в памяти нет нужного факта.
     """
+
+    @staticmethod
+    def _solve_comparison(low: str) -> Optional[str]:
+        norm = low.replace("ё", "е")
+        q = re.search(r"сам(?:ый|ая|ое|ые|ого|ую)\s+([а-я]+)", norm)
+        if not q:
+            return None
+        asked = q.group(1)
+        for more, less, max_adj, min_adj in _COMPARISONS:
+            if more not in norm and less not in norm:
+                continue
+            if asked.startswith(max_adj):
+                want_max = True
+            elif asked.startswith(min_adj):
+                want_max = False
+            else:
+                continue
+            premise = low[:q.start()]
+            premise = re.sub(r"\b(если|то|чем|а|и|но)\b", " ", premise)
+            edges: List[Tuple[str, str]] = []
+            names: Dict[str, str] = {}
+            for m in re.finditer(rf"([а-яёa-z]+)\s+({more}|{less})\s+([а-яёa-z]+)", premise):
+                a, rel, b = m.group(1), m.group(2), m.group(3)
+                ka, kb = _root_key(a), _root_key(b)
+                names[ka] = a                    # форма-подлежащее (именительный падеж) приоритетнее
+                names.setdefault(kb, b)
+                edges.append((ka, kb) if rel == more else (kb, ka))
+            if len(edges) < 2:
+                return None
+            nodes = sorted({x for e in edges for x in e})
+            greater = {n: set() for n in nodes}
+            for a, b in edges:
+                greater[a].add(b)
+            # транзитивное замыкание
+            changed = True
+            while changed:
+                changed = False
+                for n in nodes:
+                    extra = set().union(*(greater[x] for x in greater[n])) - greater[n]
+                    if extra:
+                        greater[n] |= extra
+                        changed = True
+            if any(n in greater[n] for n in nodes):
+                return ("Давай рассуждать логически: в условии противоречие — по цепочке сравнений "
+                        "кто-то оказывается «больше самого себя», поэтому однозначного ответа нет.")
+            if want_max:
+                cands = [n for n in nodes if len(greater[n]) == len(nodes) - 1]
+            else:
+                cands = [n for n in nodes if not greater[n] and all(n in greater[m] for m in nodes if m != n)]
+            phrase = low[q.start():q.end()]      # «самая глупая», «самый лёгкий» — как в вопросе
+            if len(cands) != 1:
+                return (f"Давай рассуждать логически: из условия нельзя однозначно определить, кто {phrase} — "
+                        f"не все участники сравнены между собой. Нужно ещё одно сравнение.")
+            order = sorted(nodes, key=lambda n: -len(greater[n]))
+            chain_str = " → ".join(names[n].capitalize() for n in order)
+            return (f"Давай рассуждать логически по правилу транзитивности: выстраиваем цепочку "
+                    f"от большего признака к меньшему ({chain_str}). "
+                    f"Следовательно, {phrase} здесь — {names[cands[0]].capitalize()}.")
+        return None
+
+    @staticmethod
+    def _solve_arithmetic(low: str) -> Optional[str]:
+        expr_text = words_to_numbers(low)
+        expr_text = (
+            expr_text.replace("умножить на", "*").replace("умноженное на", "*")
+            .replace("разделить на", "/").replace("поделить на", "/").replace("делить на", "/")
+            .replace("плюс", "+").replace("прибавить", "+")
+            .replace("минус", " - ").replace("вычесть", " - ").replace("отнять", " - ")
+            .replace("×", "*").replace("÷", "/")
+        )
+        m = re.search(r"(\(?\s*\d+(?:[.,]\d+)?\s*\)?(?:\s*[-+*/]\s*\(?\s*\d+(?:[.,]\d+)?\s*\)?)+)", expr_text)
+        if not m:
+            return None
+        raw = re.sub(r"\s+", " ", m.group(1)).strip()
+        only_tight_hyphen = not re.search(r"[+*/]|\s-|-\s", raw)
+        if only_tight_hyphen and (not _ARITH_CUES.search(low) or re.fullmatch(r"\d{4}(-\d{4})+", raw)):
+            return None          # «1941-1945», телефоны и даты — это не вычитание
+        try:
+            val = safe_arithmetic(raw.replace(",", "."))
+        except ZeroDivisionError:
+            return ("Логическая проверка: в выражении встретилось деление на ноль, а в математике "
+                    "деление на ноль не определено, так как приводит к противоречию.")
+        except (ValueError, SyntaxError):
+            return None
+        if isinstance(val, float):
+            val = int(val) if val.is_integer() else round(val, 4)
+        return f"Посчитаем по правилам арифметики: выражение ({raw}) даёт точный результат: {val}."
 
     @staticmethod
     def try_solve_logic_or_math(user_text: str) -> Optional[str]:
         low = user_text.lower().strip()
-
-        # 1. Проверка на транзитивное логическое сравнение:
-        # Пример: "Если тигр быстрее волка, а волк быстрее черепахи, кто самый медленный / быстрый?"
-        if "если" in low and ("кто сам" in low or "что сам" in low or "кто из них" in low):
-            comp_pairs = [
-                ("быстрее", "быстрый", "медленный"),
-                ("медленнее", "медленный", "быстрый"),
-                ("старше", "старший", "младший"),
-                ("младше", "младший", "старший"),
-                ("тяжелее", "тяжёлый", "лёгкий"),
-                ("легче", "лёгкий", "тяжёлый"),
-                ("выше", "высокий", "низкий"),
-                ("ниже", "низкий", "высокий"),
-                ("сильнее", "сильный", "слабый"),
-                ("больше", "больший", "меньший"),
-            ]
-            for rel_word, max_adj, min_adj in comp_pairs:
-                if rel_word in low:
-                    # Ищем пары "X <rel_word> чем Y" или "X <rel_word> Y"
-                    clauses = re.split(r"[,;]|(?:\s+а\s+)|(?:\s+и\s+)", low)
-                    chain: List[Tuple[str, str]] = []
-                    for cl in clauses:
-                        cl_clean = re.sub(r"\b(если|то|чем)\b", " ", cl).strip()
-                        m = re.search(rf"([а-яёa-z]+)\s+{rel_word}\s+([а-яёa-z]+)", cl_clean)
-                        if m:
-                            a_item, b_item = m.group(1), m.group(2)
-                            chain.append((a_item, b_item))
-
-                    if len(chain) >= 2:
-                        # Строим упорядоченный список от максимума к минимуму с учётом склонений (по корню)
-                        def _same_root(w1: str, w2: str) -> bool:
-                            c1 = w1[0] + re.sub(r"[аеёиоуыэюяьъ]", "", w1[1:])[:2]
-                            c2 = w2[0] + re.sub(r"[аеёиоуыэюяьъ]", "", w2[1:])[:2]
-                            return c1 == c2 and len(c1) >= 2
-
-                        order: List[str] = [chain[0][0], chain[0][1]]
-                        for a_item, b_item in chain[1:]:
-                            a_match = next((i for i, x in enumerate(order) if _same_root(x, a_item)), -1)
-                            b_match = next((i for i, x in enumerate(order) if _same_root(x, b_item)), -1)
-                            if a_match != -1 and b_match == -1:
-                                order.insert(a_match + 1, b_item)
-                            elif b_match != -1 and a_match == -1:
-                                order.insert(b_match, a_item)
-
-                        top_entity = order[0].capitalize()
-                        bottom_entity = order[-1].capitalize()
-                        chain_str = " → ".join(x.capitalize() for x in order)
-
-                        if min_adj[:4] in low:
-                            return (
-                                f"Давай рассуждать логически по правилу транзитивности: "
-                                f"выстраиваем цепочку от большего признака к меньшему ({chain_str}). "
-                                f"Следовательно, самый {min_adj} в этой цепочке — {bottom_entity}."
-                            )
-                        if max_adj[:4] in low:
-                            return (
-                                f"Давай рассуждать логически по правилу транзитивности: "
-                                f"выстраиваем цепочку ({chain_str}). "
-                                f"Следовательно, самый {max_adj} здесь — {top_entity}."
-                            )
-
-        # 2. Проверка на арифметическое выражение цифрами или словами
-        expr_text = low
-        for word, val in sorted(RUSSIAN_NUM_WORDS.items(), key=lambda x: -len(x[0])):
-            expr_text = re.sub(rf"\b{word}\b", str(val), expr_text)
-        # Складываем соседние разряды составных числительных ("20 5" -> "25", "100 20 5" -> "125")
-        for _ in range(2):
-            expr_text = re.sub(r"(\d+)\s+(\d+)", lambda m: str(int(m.group(1)) + int(m.group(2))), expr_text)
-
-        expr_text = (
-            expr_text.replace("умножить на", "*")
-            .replace("умноженное на", "*")
-            .replace("разделить на", "/")
-            .replace("поделить на", "/")
-            .replace("плюс", "+")
-            .replace("прибавить", "+")
-            .replace("минус", "-")
-            .replace("вычесть", "-")
-            .replace("отнять", "-")
-        )
-        math_match = re.search(r"(\d+(?:\s*[\+\-\*\/]\s*\d+)+)", expr_text)
-        if math_match:
-            raw_expr = math_match.group(1)
-            # Если это не стандартный пример "2 + 2" из корпуса, считаем аналитически
-            if re.sub(r"\s+", "", raw_expr) not in ("2+2", "2+2*2"):
-                try:
-                    val = eval(raw_expr, {"__builtins__": None}, {})
-                    if isinstance(val, float) and val.is_integer():
-                        val = int(val)
-                    elif isinstance(val, float):
-                        val = round(val, 4)
-                    return (
-                        f"Посчитаем логически по правилам арифметики: "
-                        f"выражение ({raw_expr.strip()}) даёт точный результат: {val}."
-                    )
-                except ZeroDivisionError:
-                    return (
-                        "Логическая проверка: в выражении встретилось деление на ноль, "
-                        "а в математике деление на ноль не определено, так как приводит к противоречию."
-                    )
-                except Exception:
-                    pass
-
-        return None
+        if re.search(r"сам(ый|ая|ое|ые|ого|ую)\s", low) or "кто из них" in low:
+            solved = EpistemicLogicEngine._solve_comparison(low)
+            if solved:
+                return solved
+        return EpistemicLogicEngine._solve_arithmetic(low)
 
     @staticmethod
     def build_honest_unknown_response(
@@ -372,19 +420,12 @@ class EpistemicLogicEngine:
         best_partial_reply: Optional[str] = None,
         partial_confidence: float = 0.0
     ) -> str:
-        """
-        Формирует честный, осмысленный ответ в ситуации, когда модель не знает факта:
-        - Прямо говорит, что именно ей неизвестно (без галлюцинаций и выдумывания).
-        - Проводит логический разбор типа вопроса (о человеке, месте, времени, причине или понятии).
-        - Если есть смежная мысль в памяти — аккуратно упоминает её как гипотезу.
-        - Предлагает собеседнику объяснить этот факт в следующей реплике, чтобы сразу запомнить его.
-        """
+        """Честный ответ, когда факта нет в памяти: что именно неизвестно + тип вопроса + предложение научить."""
         low = user_text.lower().strip()
 
-        # Определяем логическую категорию вопроса
-        if low.startswith("кто ") or " кто " in low or any(w in low for w in ("кто так", "кем был", "кто написал", "кто создал", "кто открыл")):
+        if low.startswith("кто ") or " кто " in low or any(w in low for w in ("кем был", "кто написал", "кто создал", "кто открыл")):
             q_type = "конкретной личности, авторе или историческом деятеле"
-        elif any(w in low for w in ("где наход", "какая столиц", "в каком городе", "в какой стране", "где расп")):
+        elif any(w in low for w in ("где наход", "столиц", "в каком городе", "в какой стране", "где расп")):
             q_type = "географическом месте, стране или локации"
         elif any(w in low for w in ("когда ", "в каком году", "какого числа", "дата ")):
             q_type = "точной дате или историческом времени события"
@@ -398,23 +439,22 @@ class EpistemicLogicEngine:
         if unknown_words:
             unk_str = ", ".join(f"«{w}»" for w in unknown_words[:3])
             core_honest = (
-                f"Честно скажу: я этого пока не знаю. Понятие {unk_str} ещё не встречалось "
-                f"в моём обучающем корпусе субтитров и книг, а выдумывать факты наугад я не хочу. "
-                f"Если рассуждать логически по структуре твоего вопроса, речь идёт о {q_type}."
+                f"Честно скажу: я этого пока не знаю. Слова {unk_str} ещё не встречались "
+                f"в моём обучающем корпусе, а выдумывать факты наугад я не хочу. "
+                f"Если рассуждать по структуре твоего вопроса, речь идёт о {q_type}."
             )
         else:
             core_honest = (
                 f"Честно признаюсь: точного ответа на этот вопрос в моей памяти сейчас нет, "
-                f"а выдавать догадку за факт было бы нечестно. Логически я вижу, что ты спрашиваешь о {q_type}."
+                f"а выдавать догадку за факт было бы нечестно. Я вижу, что ты спрашиваешь о {q_type}."
             )
 
         if best_partial_reply and partial_confidence >= 0.22:
             return (
                 f"{core_honest} Ближайшая мысль в моей памяти по смежной теме звучит так: "
                 f"«{best_partial_reply}» Но если ты напишешь мне точный ответ в следующей фразе — "
-                f"я сразу запишу его в память и дообучусь!"
+                f"я сразу запишу его в память!"
             )
-
         return (
             f"{core_honest} Напиши мне коротко ответ на этот вопрос в следующем сообщении — "
             f"и я сразу сохраню это знание в свою память!"
@@ -422,14 +462,21 @@ class EpistemicLogicEngine:
 
 
 # =============================================================================
-# 4. ТОКЕНИЗАТОР С АНАЛИЗОМ НЕИЗВЕСТНЫХ ПОНЯТИЙ
+# 4. ТОКЕНИЗАТОР (СЛОВЕСНЫЙ) С ПОИСКОМ ПО КОРНЮ
 # =============================================================================
 
 class RussianMorphemeTokenizer:
+    """
+    Словесный токенизатор (одно слово = один токен) с подбором известного слова по общему началу.
+    Для больших текстов он не подходит (словарь русских словоформ — миллионы); там используется
+    субсловный SentencePiece в train_lm.py.
+    """
+
     def __init__(self):
-        self.special_tokens = ["<pad>", "<bos>", "<eos>", "<unk>"]
+        self.special_tokens = list(SPECIAL_TOKENS)
         self.token_to_id: Dict[str, int] = {}
         self.id_to_token: List[str] = []
+        self._prefix_index: Dict[str, List[int]] = {}
         for tok in self.special_tokens:
             self._add_token(tok)
 
@@ -438,8 +485,17 @@ class RussianMorphemeTokenizer:
             idx = len(self.id_to_token)
             self.token_to_id[token] = idx
             self.id_to_token.append(token)
+            if len(token) >= 4:
+                self._prefix_index.setdefault(token[:4], []).append(idx)
             return idx
         return self.token_to_id[token]
+
+    def rebuild_index(self) -> None:
+        self.token_to_id = {t: i for i, t in enumerate(self.id_to_token)}
+        self._prefix_index = {}
+        for i, t in enumerate(self.id_to_token):
+            if len(t) >= 4:
+                self._prefix_index.setdefault(t[:4], []).append(i)
 
     @staticmethod
     def tokenize_text(text: str) -> List[str]:
@@ -477,57 +533,50 @@ class RussianMorphemeTokenizer:
         return self.token_to_id["<unk>"]
 
     def _resolve_token_id(self, tok: str) -> int:
+        """
+        Точное слово или словоформа того же слова. Раньше любое слово, совпавшее первыми 4 буквами,
+        считалось «известным» («погоде» -> «поговори»), и модель уверенно отвечала невпопад; кроме
+        того, поиск шёл перебором всего словаря. Теперь: индекс по 4-буквенному префиксу и требование,
+        чтобы слова отличались только последними <= 2 буквами (первый/первом, книга/книгу).
+        """
         if tok in self.token_to_id:
             return self.token_to_id[tok]
         if len(tok) >= 4:
             stem = tok[: max(4, len(tok) - 2)]
-            for known_tok, idx in self.token_to_id.items():
-                if len(known_tok) >= 4 and known_tok.startswith(stem):
+            for idx in self._prefix_index.get(tok[:4], ()):
+                known = self.id_to_token[idx]
+                if not known.startswith(stem):
+                    continue
+                common = len(os.path.commonprefix([tok, known]))
+                if common >= max(4, max(len(tok), len(known)) - 2):
                     return idx
         return self.unk_id
 
     def find_unknown_content_words(self, text: str) -> Tuple[List[str], List[str]]:
-        """
-        Разделяет значимые (не служебные) слова вопроса на:
-        - известные модели (по точному слову или корневой морфеме),
-        - полностью неизвестные модели слова (`unknown_words`).
-        """
+        """Делит значимые слова вопроса на известные модели и неизвестные."""
         known_content: List[str] = []
         unknown_content: List[str] = []
-
         for tok in self.tokenize_text(text):
             if tok in FUNCTION_WORDS or len(tok) <= 2 or tok.isdigit():
                 continue
-            resolved = self._resolve_token_id(tok)
-            if resolved == self.unk_id:
-                # Проверяем также по синонимическим корням
-                has_syn = any(tok.startswith(sk) for sk in SYNONYM_STEMS)
-                if has_syn:
+            if self._resolve_token_id(tok) == self.unk_id:
+                if any(tok.startswith(sk) for sk in SYNONYM_STEMS):
                     known_content.append(tok)
                 else:
                     unknown_content.append(tok)
             else:
                 known_content.append(tok)
-
         return known_content, unknown_content
 
     def encode(self, text: str, add_bos: bool = True, add_eos: bool = True) -> List[int]:
-        ids: List[int] = []
-        if add_bos:
-            ids.append(self.bos_id)
-        for tok in self.tokenize_text(text):
-            ids.append(self._resolve_token_id(tok))
+        ids: List[int] = [self.bos_id] if add_bos else []
+        ids.extend(self._resolve_token_id(tok) for tok in self.tokenize_text(text))
         if add_eos:
             ids.append(self.eos_id)
         return ids
 
     def decode(self, ids: List[int]) -> str:
-        tokens = [
-            self.id_to_token[idx]
-            for idx in ids
-            if 0 <= idx < len(self.id_to_token)
-        ]
-        return format_natural_russian(tokens)
+        return format_natural_russian([self.id_to_token[i] for i in ids if 0 <= i < len(self.id_to_token)])
 
     def compute_complexity_hints(self, token_ids: List[int]) -> np.ndarray:
         hints = np.zeros(len(token_ids), dtype=np.float32)
@@ -536,8 +585,6 @@ class RussianMorphemeTokenizer:
             next_tok = self.id_to_token[token_ids[i + 1]]
             if cur_tok in ("?", "!") or (next_tok not in FUNCTION_WORDS and len(next_tok) >= 5):
                 hints[i] = 1.0
-            else:
-                hints[i] = 0.0
         return hints
 
 
@@ -547,13 +594,12 @@ class RussianMorphemeTokenizer:
 
 def pack_ternary_matrix(w_ternary: np.ndarray) -> Tuple[np.ndarray, Tuple[int, int]]:
     shape = w_ternary.shape
-    flat = (w_ternary.ravel().astype(np.int16) + 1)
+    flat = w_ternary.ravel().astype(np.int16) + 1
     pad_len = (5 - (len(flat) % 5)) % 5
     if pad_len > 0:
         flat = np.concatenate([flat, np.ones(pad_len, dtype=np.int16)])
-    reshaped = flat.reshape(-1, 5)
-    powers = np.array([1, 3, 9, 27, 81], dtype=np.uint8)
-    packed = np.sum(reshaped.astype(np.uint8) * powers, axis=1).astype(np.uint8)
+    powers = np.array([1, 3, 9, 27, 81], dtype=np.int16)
+    packed = (flat.reshape(-1, 5) * powers).sum(axis=1).astype(np.uint8)
     return packed, shape
 
 
@@ -566,10 +612,17 @@ def unpack_ternary_matrix(packed: np.ndarray, shape: Tuple[int, int]) -> np.ndar
 
 
 # =============================================================================
-# 6. ЯДРО SLR-Net С ПАМЯТЬЮ СУБТИТРОВ И ЭПИСТЕМИЧЕСКИМ КОНТРОЛЕМ УВЕРЕННОСТИ
+# 6. МИКРО-СЕТЬ SLR-Net С ПАМЯТЬЮ ДИАЛОГОВ
 # =============================================================================
 
+TERNARY_NAMES = ("w_ctx1", "w_ctx2", "w_ssm", "w_think", "w_out")
+
+
 class TrainableSLRNetEngine:
+    # Константы архитектуры (одинаковы в прямом и обратном проходе)
+    C1, C2, C_SSM, SSM_DECAY, SSM_IN = 0.8, 0.5, 0.7, 0.88, 0.40
+    MEM_LOOP, MEM_OUT, THINK_STEP, ROUTE_THR, ROUTER_COEF = 0.45, 1.15, 0.35, 0.45, 0.25
+
     def __init__(
         self,
         vocab_size: int,
@@ -578,31 +631,29 @@ class TrainableSLRNetEngine:
         max_seq_len: int = 96,
         max_latent_steps: int = 3,
         seed: int = 42,
+        copy_bias: float = 5.5,
     ):
         self.vocab_size = vocab_size
         self.d_model = d_model
         self.memory_slots = memory_slots
         self.max_seq_len = max_seq_len
         self.max_latent_steps = max_latent_steps
-        rng = np.random.default_rng(seed)
+        self.copy_bias = copy_bias      # подсказка копирования ответа из памяти (только при генерации!)
+        self.quantize = True
+        self.rng = np.random.default_rng(seed)
+        rng = self.rng
 
         scale = 1.0 / math.sqrt(d_model)
         self.embed = (rng.standard_normal((vocab_size, d_model)) * 0.22).astype(np.float32)
         self.pos_embed = (rng.standard_normal((max_seq_len, d_model)) * 0.12).astype(np.float32)
-
-        # Троичные матрицы ядра (BitLinear b1.58)
         self.w_ctx1 = (rng.standard_normal((d_model, d_model)) * scale).astype(np.float32)
         self.w_ctx2 = (rng.standard_normal((d_model, d_model)) * scale).astype(np.float32)
         self.w_ssm = (rng.standard_normal((d_model, d_model)) * scale).astype(np.float32)
         self.w_think = (rng.standard_normal((d_model, d_model)) * scale).astype(np.float32)
         self.w_out = (rng.standard_normal((vocab_size, d_model)) * scale).astype(np.float32)
         self.b_out = np.zeros(vocab_size, dtype=np.float32)
-
-        # Роутер когнитивной сложности (Mixture-of-Depths)
         self.w_router = (rng.standard_normal((d_model, 1)) * scale).astype(np.float32)
         self.b_router = np.zeros(1, dtype=np.float32)
-
-        # Внешняя память субтитров и фактов (Memory Layers / RETRO)
         self.mem_keys = (rng.standard_normal((memory_slots, d_model)) * scale).astype(np.float32)
         self.mem_vals = (rng.standard_normal((memory_slots, d_model)) * scale).astype(np.float32)
         self.slot_prompts: List[List[int]] = []
@@ -612,6 +663,10 @@ class TrainableSLRNetEngine:
             "embed", "pos_embed", "w_ctx1", "w_ctx2", "w_ssm",
             "w_think", "w_out", "b_out", "w_router", "b_router", "mem_vals"
         ]
+        self._reset_optimizer()
+        self._qcache: Dict[str, Tuple[int, np.ndarray, float]] = {}
+
+    def _reset_optimizer(self) -> None:
         self._m = {k: np.zeros_like(getattr(self, k)) for k in self._param_names}
         self._v = {k: np.zeros_like(getattr(self, k)) for k in self._param_names}
         self._step = 0
@@ -630,39 +685,47 @@ class TrainableSLRNetEngine:
     def quantize_b158(w: np.ndarray, eps: float = 1e-6) -> Tuple[np.ndarray, float, float]:
         gamma = float(max(np.mean(np.abs(w)), eps))
         w_tern = np.clip(np.round(w / gamma), -1.0, 1.0).astype(np.int8)
-        sparsity = float(np.mean(w_tern == 0))
-        return w_tern, gamma, sparsity
+        return w_tern, gamma, float(np.mean(w_tern == 0))
 
     @staticmethod
     def add_only_matmul(x: np.ndarray, w_tern: np.ndarray, gamma: float) -> np.ndarray:
-        pos_mask = (w_tern == 1).astype(np.float32)
-        neg_mask = (w_tern == -1).astype(np.float32)
-        return (x @ pos_mask.T - x @ neg_mask.T) * gamma
+        """y = x @ (gamma * W_t)^T. На обычном CPU это один matmul (раньше было два — вдвое медленнее)."""
+        return (x @ w_tern.T.astype(np.float32)) * gamma
 
-    def populate_fact_memory(
-        self,
-        sequences: List[List[int]],
-        tokenizer: RussianMorphemeTokenizer
-    ) -> None:
-        self.slot_prompts = []
-        self.slot_full_seqs = []
+    def _effective(self, name: str) -> Tuple[np.ndarray, float]:
+        """Эффективная (квантованная) матрица и её разреженность. Кэшируется, пока веса не менялись."""
+        w = getattr(self, name)
+        if not self.quantize:
+            return w, 0.0
+        cached = self._qcache.get(name)
+        if cached is not None and cached[0] == self._step and cached[1].shape == w.shape:
+            return cached[1], cached[2]
+        w_t, gamma, sparsity = self.quantize_b158(w)
+        eff = w_t.astype(w.dtype) * w.dtype.type(gamma)
+        self._qcache[name] = (self._step, eff, sparsity)
+        return eff, sparsity
 
-        for idx, seq in enumerate(sequences[: self.memory_slots]):
-            if len(seq) < 3:
-                continue
-            split_pos = max(2, len(seq) // 3)
-            for i in range(1, len(seq) - 1):
-                tok = tokenizer.id_to_token[seq[i]]
-                if tok in ("?", "!", "."):
-                    split_pos = i + 1
-                    break
-
-            q_vec = np.mean(self.embed[seq[:split_pos]], axis=0)
-            a_vec = np.mean(self.embed[seq[split_pos:]], axis=0)
-            self.mem_keys[idx] = q_vec / (np.linalg.norm(q_vec) + 1e-6)
-            self.mem_vals[idx] = a_vec
-            self.slot_prompts.append(seq[1:split_pos])
+    def _write_slot(self, idx: int, seq: List[int], tokenizer: RussianMorphemeTokenizer) -> None:
+        split_pos = max(2, len(seq) // 3)
+        for i in range(1, len(seq) - 1):
+            if tokenizer.id_to_token[seq[i]] in ("?", "!", "."):
+                split_pos = i + 1
+                break
+        q_vec = np.mean(self.embed[seq[:split_pos]], axis=0)
+        self.mem_keys[idx] = q_vec / (np.linalg.norm(q_vec) + 1e-6)
+        self.mem_vals[idx] = np.mean(self.embed[seq[split_pos:]], axis=0)
+        prompt = seq[1:split_pos]
+        if idx < len(self.slot_prompts):
+            self.slot_prompts[idx], self.slot_full_seqs[idx] = prompt, seq
+        else:
+            self.slot_prompts.append(prompt)
             self.slot_full_seqs.append(seq)
+
+    def populate_fact_memory(self, sequences: List[List[int]], tokenizer: RussianMorphemeTokenizer) -> None:
+        self.slot_prompts, self.slot_full_seqs = [], []
+        for seq in sequences[: self.memory_slots]:
+            if len(seq) >= 3:
+                self._write_slot(len(self.slot_prompts), seq, tokenizer)
 
     def evaluate_epistemic_match(
         self,
@@ -670,186 +733,219 @@ class TrainableSLRNetEngine:
         tokenizer: RussianMorphemeTokenizer
     ) -> Tuple[int, float, List[str]]:
         """
-        Оценивает смысловую близость вопроса к памяти и вычисляет калиброванную уверенность (Confidence):
-        - Учитывает ТОЛЬКО содержательные слова при проверке фактов (чтобы общие слова «кто», «такой»,
-          «какая», «почему» не давали ложного срабатывания на неизвестных темах!).
-        - Если в вопросе есть неизвестные ключевые термины (например, незнакомое имя, город, предмет),
-          снижает уверенность пропорционально доле неизвестных слов.
+        Смысловая близость вопроса к памяти по содержательным словам и калиброванная уверенность.
+        Неизвестные ключевые термины снижают уверенность пропорционально их доле.
         """
         if not self.slot_prompts:
             return 0, 0.0, []
 
         known_content, unknown_content = tokenizer.find_unknown_content_words(user_text)
-        all_tokens = [
-            t for t in tokenizer.tokenize_text(user_text)
-            if t not in (",", ".", "!", "?", "—", "-", ":")
-        ]
+        all_tokens = [t for t in tokenizer.tokenize_text(user_text) if t not in (",", ".", "!", "?", "—", "-", ":")]
         if not all_tokens:
             return 0, 0.0, []
-
-        # Если пользователь задал предметный вопрос (есть существительные/термины),
-        # и ВСЕ содержательные слова вопроса модели неизвестны — уверенность строго 0.0!
-        if len(unknown_content) > 0 and len(known_content) == 0:
+        if unknown_content and not known_content:
             return 0, 0.0, unknown_content
 
         user_stems = set()
         for w in known_content:
-            stem = w[:5] if len(w) >= 5 else w[:4] if len(w) >= 4 else w
-            user_stems.add(stem)
+            user_stems.add(w[:5] if len(w) >= 5 else w[:4] if len(w) >= 4 else w)
             for syn_key, syn_list in SYNONYM_STEMS.items():
                 if w.startswith(syn_key):
                     user_stems.update(syn_list)
 
-        best_slot = 0
-        best_confidence = 0.0
-
+        best_slot, best_confidence = 0, 0.0
         for slot_idx, q_ids in enumerate(self.slot_prompts):
             q_words = [tokenizer.id_to_token[tid] for tid in q_ids]
             full_words = [tokenizer.id_to_token[tid] for tid in self.slot_full_seqs[slot_idx]]
             q_content = [w for w in q_words if w not in FUNCTION_WORDS and len(w) > 2]
 
-            matched_content_count = 0.0
+            matched = 0.0
             for uw in known_content:
                 u_stem = uw[:4] if len(uw) >= 4 else uw
-                if any(qw == uw for qw in q_words):
-                    matched_content_count += 1.0
+                if uw in q_words:
+                    matched += 1.0
                 elif len(u_stem) >= 4 and any(qw.startswith(u_stem) for qw in q_words):
-                    matched_content_count += 0.85
+                    matched += 0.85
                 elif len(u_stem) >= 4 and any(fw.startswith(u_stem) for fw in full_words):
-                    matched_content_count += 0.45
-
-            # Проверяем синонимические корни
+                    matched += 0.45
             for stem in user_stems:
                 if len(stem) >= 3 and any(qw.startswith(stem) for qw in q_words):
-                    matched_content_count += 0.55
+                    matched += 0.55
 
-            # Если вопрос состоит только из приветствия/коротких разговорных слов ("привет", "как дела")
-            if len(known_content) == 0 and len(unknown_content) == 0:
-                 exact_overlap = sum(1 for t in all_tokens if t in q_words)
-                 conf = exact_overlap / max(1.0, float(len(all_tokens)))
+            if not known_content and not unknown_content:
+                conf = sum(1 for t in all_tokens if t in q_words) / max(1.0, float(len(all_tokens)))
             else:
-                total_query_concepts = float(len(known_content) + len(unknown_content))
-                query_coverage = matched_content_count / max(1.0, total_query_concepts)
-                slot_coverage = matched_content_count / max(1.0, float(len(q_content)))
-                conf = 0.65 * query_coverage + 0.35 * min(1.0, slot_coverage)
-
-                # Штраф за наличие неизвестных ключевых терминов в вопросе
+                total = float(len(known_content) + len(unknown_content))
+                conf = 0.65 * (matched / total) + 0.35 * min(1.0, matched / max(1.0, float(len(q_content))))
                 if unknown_content:
-                    unk_ratio = len(unknown_content) / total_query_concepts
-                    conf *= (1.0 - 0.75 * unk_ratio)
+                    conf *= (1.0 - 0.75 * len(unknown_content) / total)
 
             if conf > best_confidence:
-                best_confidence = conf
-                best_slot = slot_idx
+                best_confidence, best_slot = conf, slot_idx
 
         return best_slot, min(1.0, best_confidence), unknown_content
 
-    def forward(self, token_ids: np.ndarray, forced_slot: int = -1) -> Dict[str, object]:
+    def forward(self, token_ids: np.ndarray, forced_slot: int = -1, copy_bias: float = 0.0) -> Dict[str, object]:
+        """
+        Прямой проход. copy_bias > 0 добавляет к логиту следующего слова эталонного ответа из памяти
+        (режим «проигрывания» ответа). При обучении copy_bias = 0, иначе сеть «видит» правильный ответ
+        во входе и метрики обучения бессмысленны (так было в первой версии: 100% «точности»).
+        """
         seq_len = len(token_ids)
         pos_idx = np.minimum(np.arange(seq_len), len(self.pos_embed) - 1)
         x = self.embed[token_ids] + self.pos_embed[pos_idx]
+        W = {}
+        sparsity = []
+        for name in TERNARY_NAMES:
+            W[name], sp = self._effective(name)
+            sparsity.append(sp)
 
-        w_c1_t, g_c1, sp1 = self.quantize_b158(self.w_ctx1)
-        w_c2_t, g_c2, sp2 = self.quantize_b158(self.w_ctx2)
-        w_ssm_t, g_ssm, sp3 = self.quantize_b158(self.w_ssm)
-        w_th_t, g_th, sp4 = self.quantize_b158(self.w_think)
-        w_out_t, g_out, sp5 = self.quantize_b158(self.w_out)
-        avg_sparsity = (sp1 + sp2 + sp3 + sp4 + sp5) / 5.0
+        zero = np.zeros((1, self.d_model), dtype=x.dtype)
+        x_prev1 = np.vstack([zero, x[:-1]])
+        x_prev2 = np.vstack([zero, zero, x[:-2]])[:seq_len]
+        c1 = x_prev1 @ W["w_ctx1"].T
+        c2 = x_prev2 @ W["w_ctx2"].T
 
-        x_prev1 = np.vstack([np.zeros((1, self.d_model), dtype=np.float32), x[:-1]])
-        x_prev2 = np.vstack([np.zeros((2, self.d_model), dtype=np.float32), x[:-2]])
-        c1 = self.add_only_matmul(x_prev1, w_c1_t, g_c1)
-        c2 = self.add_only_matmul(x_prev2, w_c2_t, g_c2)
-
-        ssm_in = self.add_only_matmul(x, w_ssm_t, g_ssm)
+        ssm_in = x @ W["w_ssm"].T + x
         ssm_state = np.zeros_like(x)
-        cur_s = np.zeros(self.d_model, dtype=np.float32)
+        cur_s = np.zeros(self.d_model, dtype=x.dtype)
         for t in range(seq_len):
-            cur_s = 0.88 * cur_s + 0.40 * (ssm_in[t] + x[t])
+            cur_s = self.SSM_DECAY * cur_s + self.SSM_IN * ssm_in[t]
             ssm_state[t] = cur_s
 
-        h_ctx = x + 0.8 * c1 + 0.5 * c2 + 0.7 * ssm_state
+        h_ctx = x + self.C1 * c1 + self.C2 * c2 + self.C_SSM * ssm_state
+        c_prob = self.sigmoid(h_ctx @ self.w_router + self.b_router)
+        route_mask = c_prob[:, 0] >= self.ROUTE_THR
 
-        router_logits = h_ctx @ self.w_router + self.b_router
-        c_prob = self.sigmoid(router_logits)
-        route_mask = (c_prob[:, 0] >= 0.45)
+        if 0 <= forced_slot < self.memory_slots:
+            top_slots = np.full(seq_len, forced_slot, dtype=np.int32)
+        else:
+            k_norms = self.mem_keys / (np.linalg.norm(self.mem_keys, axis=-1, keepdims=True) + 1e-6)
+            q = ssm_state / (np.linalg.norm(ssm_state, axis=-1, keepdims=True) + 1e-6)
+            top_slots = np.argmax(q @ k_norms.T, axis=-1).astype(np.int32)
+        mem_context = self.mem_vals[top_slots]
 
-        k_norms = self.mem_keys / (np.linalg.norm(self.mem_keys, axis=-1, keepdims=True) + 1e-6)
-        mem_context = np.zeros_like(h_ctx)
-        top_slots = np.zeros(seq_len, dtype=np.int32)
         z_loop = np.zeros_like(h_ctx)
         latent_steps = np.zeros(seq_len, dtype=np.int32)
-
-        for t in range(seq_len):
-            if 0 <= forced_slot < self.memory_slots:
-                best_slot = forced_slot
-            else:
-                q_vec = ssm_state[t] / (np.linalg.norm(ssm_state[t]) + 1e-6)
-                scores = k_norms @ q_vec
-                best_slot = int(np.argmax(scores))
-
-            top_slots[t] = best_slot
-            mem_context[t] = self.mem_vals[best_slot]
-
-            if not route_mask[t]:
-                continue
-
-            z_cur = h_ctx[t:t+1] + 0.45 * mem_context[t:t+1]
+        loops: Dict[int, Tuple[List[np.ndarray], List[np.ndarray]]] = {}
+        w_th = W["w_think"]
+        for t in np.nonzero(route_mask)[0]:
+            z = h_ctx[t] + self.MEM_LOOP * mem_context[t]
+            zs, ths = [z], []
             for step in range(self.max_latent_steps):
+                th = np.tanh(z @ w_th.T)
+                z = z + self.THINK_STEP * th
+                zs.append(z)
+                ths.append(th)
                 latent_steps[t] += 1
-                step_delta = np.tanh(self.add_only_matmul(z_cur, w_th_t, g_th))
-                z_cur = z_cur + 0.35 * step_delta
-                if float(np.mean(np.abs(step_delta))) < 0.12 and step >= 1:
+                if step >= 1 and float(np.mean(np.abs(th))) < 0.12:
                     break
-            z_loop[t] = z_cur[0] - h_ctx[t]
+            z_loop[t] = z - h_ctx[t]
+            loops[int(t)] = (zs, ths)
 
-        h_final = h_ctx + 1.15 * mem_context + c_prob * z_loop
-        logits = self.add_only_matmul(h_final, w_out_t, g_out) + self.b_out
+        h_final = h_ctx + self.MEM_OUT * mem_context + c_prob * z_loop
+        logits = h_final @ W["w_out"].T + self.b_out
 
-        if 0 <= forced_slot < len(self.slot_full_seqs):
+        if copy_bias and 0 <= forced_slot < len(self.slot_full_seqs):
             ref_seq = self.slot_full_seqs[forced_slot]
-            for t in range(seq_len):
-                if t + 1 < len(ref_seq):
-                    logits[t, ref_seq[t + 1]] += 5.5
+            n = min(seq_len, len(ref_seq) - 1)
+            logits[np.arange(n), np.asarray(ref_seq[1:n + 1])] += copy_bias
 
         return {
-            "logits": logits,
-            "x": x,
-            "x_prev1": x_prev1,
-            "x_prev2": x_prev2,
-            "h_ctx": h_ctx,
-            "h_final": h_final,
-            "z_loop": z_loop,
-            "c_prob": c_prob,
-            "route_mask": route_mask,
-            "latent_steps": latent_steps,
-            "top_slots": top_slots,
-            "pos_idx": pos_idx,
-            "w_out_eff": w_out_t.astype(np.float32) * g_out,
-            "w_th_eff": w_th_t.astype(np.float32) * g_th,
-            "w_c1_eff": w_c1_t.astype(np.float32) * g_c1,
-            "w_c2_eff": w_c2_t.astype(np.float32) * g_c2,
-            "w_ssm_eff": w_ssm_t.astype(np.float32) * g_ssm,
-            "avg_sparsity": avg_sparsity,
+            "logits": logits, "x": x, "x_prev1": x_prev1, "x_prev2": x_prev2, "h_ctx": h_ctx,
+            "h_final": h_final, "z_loop": z_loop, "c_prob": c_prob, "route_mask": route_mask,
+            "latent_steps": latent_steps, "top_slots": top_slots, "pos_idx": pos_idx, "loops": loops,
+            "W": W, "avg_sparsity": float(np.mean(sparsity)),
         }
+
+    def compute_loss_and_grads(self, seq_ids: List[int], complexity_hints: np.ndarray,
+                               slot_idx: int = -1) -> Tuple[float, Dict[str, np.ndarray], Dict[str, object]]:
+        """Точное обратное распространение для forward() (проверяется численно в tests/)."""
+        inp = np.array(seq_ids[:-1], dtype=np.int32)
+        tgt = np.array(seq_ids[1:], dtype=np.int32)
+        hints = np.asarray(complexity_hints[:-1], dtype=np.float32)
+        L = len(inp)
+
+        fwd = self.forward(inp, forced_slot=slot_idx, copy_bias=0.0)
+        W = fwd["W"]
+        probs = self.softmax(fwd["logits"])
+        nll = float(-np.mean(np.log(probs[np.arange(L), tgt] + 1e-9)))
+        c_prob = fwd["c_prob"]
+        loss = nll + self.ROUTER_COEF * float(np.mean((c_prob[:, 0] - hints) ** 2))
+
+        dlogits = probs
+        dlogits[np.arange(L), tgt] -= 1.0
+        dlogits /= L
+        h_final, h_ctx, z_loop = fwd["h_final"], fwd["h_ctx"], fwd["z_loop"]
+
+        g: Dict[str, np.ndarray] = {}
+        g["w_out"] = dlogits.T @ h_final
+        g["b_out"] = dlogits.sum(axis=0)
+        dh_final = dlogits @ W["w_out"]
+
+        dh_ctx = dh_final.copy()
+        dmem = self.MEM_OUT * dh_final
+        g["w_think"] = np.zeros_like(self.w_think)
+        w_th = W["w_think"]
+        for t, (zs, ths) in fwd["loops"].items():
+            dz = c_prob[t, 0] * dh_final[t]          # z_loop = z_K - h_ctx
+            dh_ctx[t] -= dz
+            for k in range(len(ths) - 1, -1, -1):
+                du = self.THINK_STEP * dz * (1.0 - ths[k] ** 2)
+                g["w_think"] += np.outer(du, zs[k])
+                dz = dz + du @ w_th
+            dh_ctx[t] += dz                          # z_0 = h_ctx + MEM_LOOP * m
+            dmem[t] += self.MEM_LOOP * dz
+
+        dc = np.sum(dh_final * z_loop, axis=-1, keepdims=True)
+        dc += self.ROUTER_COEF * 2.0 * (c_prob - hints[:, None]) / L
+        d_rlogit = dc * c_prob * (1.0 - c_prob)
+        g["w_router"] = h_ctx.T @ d_rlogit
+        g["b_router"] = d_rlogit.sum(axis=0)
+        dh_ctx += d_rlogit @ self.w_router.T
+
+        g["mem_vals"] = np.zeros_like(self.mem_vals)
+        np.add.at(g["mem_vals"], fwd["top_slots"], dmem)
+
+        dx = dh_ctx.copy()
+        g["w_ctx1"] = (self.C1 * dh_ctx).T @ fwd["x_prev1"]
+        g["w_ctx2"] = (self.C2 * dh_ctx).T @ fwd["x_prev2"]
+        if L > 1:
+            dx[:-1] += (self.C1 * dh_ctx[1:]) @ W["w_ctx1"]
+        if L > 2:
+            dx[:-2] += (self.C2 * dh_ctx[2:]) @ W["w_ctx2"]
+        # Обратный проход через рекуррентность SSM (раньше учитывался только текущий шаг)
+        gs = np.zeros(self.d_model, dtype=dh_ctx.dtype)
+        d_in = np.zeros_like(dh_ctx)
+        for t in range(L - 1, -1, -1):
+            gs = self.C_SSM * dh_ctx[t] + self.SSM_DECAY * gs
+            d_in[t] = self.SSM_IN * gs
+        g["w_ssm"] = d_in.T @ fwd["x"]
+        dx += d_in + d_in @ W["w_ssm"]               # ssm_in = x W^T + x
+
+        g["embed"] = np.zeros_like(self.embed)
+        np.add.at(g["embed"], inp, dx)
+        g["pos_embed"] = np.zeros_like(self.pos_embed)
+        np.add.at(g["pos_embed"], fwd["pos_idx"], dx)
+        return loss, g, fwd
 
     def _adamw_step(self, grads: Dict[str, np.ndarray], lr: float, wd: float = 1e-4) -> None:
         self._step += 1
         b1, b2, eps = 0.9, 0.99, 1e-8
         bc1 = 1.0 - (b1 ** self._step)
         bc2 = 1.0 - (b2 ** self._step)
-
+        # Клиппинг по общей норме градиента (а не поэлементно, как раньше)
+        norm = math.sqrt(sum(float(np.sum(g * g)) for g in grads.values()))
+        clip = min(1.0, 1.0 / (norm + 1e-6))
         for name, g in grads.items():
-            g_clip = np.clip(g, -1.0, 1.0)
-            m = self._m[name] = b1 * self._m[name] + (1.0 - b1) * g_clip
-            v = self._v[name] = b2 * self._v[name] + (1.0 - b2) * (g_clip * g_clip)
-            m_hat = m / bc1
-            v_hat = v / bc2
+            g = g * clip
+            m = self._m[name] = b1 * self._m[name] + (1.0 - b1) * g
+            v = self._v[name] = b2 * self._v[name] + (1.0 - b2) * (g * g)
             param = getattr(self, name)
+            update = (m / bc1) / (np.sqrt(v / bc2) + eps)
             if name.startswith("w_"):
-                param -= lr * (m_hat / (np.sqrt(v_hat) + eps) + wd * param)
-            else:
-                param -= lr * (m_hat / (np.sqrt(v_hat) + eps))
+                update = update + wd * param
+            param -= (lr * update).astype(param.dtype)
 
     def train_on_sequence(
         self,
@@ -858,97 +954,65 @@ class TrainableSLRNetEngine:
         slot_idx: int = -1,
         lr: float = 0.008
     ) -> Dict[str, float]:
-        inp = np.array(seq_ids[:-1], dtype=np.int32)
-        tgt = np.array(seq_ids[1:], dtype=np.int32)
-        hints = complexity_hints[:-1]
-        seq_len = len(inp)
-
-        fwd = self.forward(inp, forced_slot=slot_idx)
-        logits: np.ndarray = fwd["logits"]  # type: ignore
-        probs = self.softmax(logits)
-
-        nll_loss = float(-np.mean(np.log(probs[np.arange(seq_len), tgt] + 1e-9)))
-        c_prob: np.ndarray = fwd["c_prob"]  # type: ignore
-        router_loss = float(np.mean((c_prob[:, 0] - hints) ** 2))
-        loss = nll_loss + 0.25 * router_loss
-
-        dlogits = probs.copy()
-        dlogits[np.arange(seq_len), tgt] -= 1.0
-        dlogits /= seq_len
-
-        h_final: np.ndarray = fwd["h_final"]  # type: ignore
-        h_ctx: np.ndarray = fwd["h_ctx"]      # type: ignore
-        z_loop: np.ndarray = fwd["z_loop"]    # type: ignore
-        x: np.ndarray = fwd["x"]              # type: ignore
-        x_prev1: np.ndarray = fwd["x_prev1"]  # type: ignore
-        x_prev2: np.ndarray = fwd["x_prev2"]  # type: ignore
-
-        dw_out = dlogits.T @ h_final
-        db_out = np.sum(dlogits, axis=0)
-        dh_final = dlogits @ fwd["w_out_eff"]  # type: ignore
-
-        dz_loop = dh_final * c_prob
-        dw_think = 0.35 * dz_loop.T @ h_ctx
-
-        d_cprob = np.sum(dh_final * z_loop, axis=-1, keepdims=True) + 0.5 * (
-            c_prob - hints[:, None]
-        ) / seq_len
-        d_rlogits = d_cprob * c_prob * (1.0 - c_prob)
-        dw_router = h_ctx.T @ d_rlogits
-        db_router = np.sum(d_rlogits, axis=0)
-
-        d_mem_vals = np.zeros_like(self.mem_vals)
-        top_slots: np.ndarray = fwd["top_slots"]  # type: ignore
-        for t, slot in enumerate(top_slots):
-            d_mem_vals[slot] += 1.15 * dh_final[t]
-
-        dh_ctx = dh_final + dz_loop @ fwd["w_th_eff"]  # type: ignore
-        dw_ctx1 = (0.8 * dh_ctx).T @ x_prev1
-        dw_ctx2 = (0.5 * dh_ctx).T @ x_prev2
-        dw_ssm = (0.7 * 0.40 * dh_ctx).T @ x
-
-        dx = dh_ctx + (0.7 * 0.40 * dh_ctx) @ fwd["w_ssm_eff"]  # type: ignore
-        if seq_len > 1:
-            dx[:-1] += (0.8 * dh_ctx[1:]) @ fwd["w_c1_eff"]  # type: ignore
-        if seq_len > 2:
-            dx[:-2] += (0.5 * dh_ctx[2:]) @ fwd["w_c2_eff"]  # type: ignore
-
-        d_embed = np.zeros_like(self.embed)
-        for t, tok_id in enumerate(inp):
-            d_embed[tok_id] += dx[t]
-
-        d_pos = np.zeros_like(self.pos_embed)
-        pos_idx: np.ndarray = fwd["pos_idx"]  # type: ignore
-        for t, p_id in enumerate(pos_idx):
-            d_pos[p_id] += dx[t]
-
-        grads = {
-            "embed": d_embed,
-            "pos_embed": d_pos,
-            "w_ctx1": dw_ctx1,
-            "w_ctx2": dw_ctx2,
-            "w_ssm": dw_ssm,
-            "w_think": dw_think,
-            "w_out": dw_out,
-            "b_out": db_out,
-            "w_router": dw_router,
-            "b_router": db_router,
-            "mem_vals": d_mem_vals,
-        }
+        loss, grads, fwd = self.compute_loss_and_grads(seq_ids, complexity_hints, slot_idx)
         self._adamw_step(grads, lr=lr)
-
-        preds = np.argmax(logits, axis=-1)
-        acc = float(np.mean(preds == tgt))
-        route_mask: np.ndarray = fwd["route_mask"]  # type: ignore
-        latent_steps: np.ndarray = fwd["latent_steps"]  # type: ignore
-
+        tgt = np.array(seq_ids[1:], dtype=np.int32)
         return {
             "loss": loss,
-            "accuracy": acc,
-            "routed_ratio": float(np.mean(route_mask)),
-            "avg_latent_steps": float(np.mean(latent_steps)),
-            "sparsity": float(fwd["avg_sparsity"]),  # type: ignore
+            "accuracy": float(np.mean(np.argmax(fwd["logits"], axis=-1) == tgt)),
+            "routed_ratio": float(np.mean(fwd["route_mask"])),
+            "avg_latent_steps": float(np.mean(fwd["latent_steps"])),
+            "sparsity": float(fwd["avg_sparsity"]),
         }
+
+    # ------------------------------------------------ мгновенное запоминание нового факта
+
+    def _grow_rows(self, name: str, n_new: int, std: float) -> None:
+        arr = getattr(self, name)
+        extra_shape = (n_new,) + arr.shape[1:]
+        extra = (self.rng.standard_normal(extra_shape) * std).astype(arr.dtype) if std else \
+            np.zeros(extra_shape, dtype=arr.dtype)
+        setattr(self, name, np.concatenate([arr, extra], axis=0))
+        if name in self._m:
+            self._m[name] = np.concatenate([self._m[name], np.zeros(extra_shape, dtype=arr.dtype)])
+            self._v[name] = np.concatenate([self._v[name], np.zeros(extra_shape, dtype=arr.dtype)])
+
+    def add_fact(self, chain_text: str, tokenizer: RussianMorphemeTokenizer, steps: int = 25,
+                 lr: float = 0.004, replay: int = 2) -> int:
+        """
+        Добавляет пару «вопрос ? ответ» в память за доли секунды (раньше вся модель переобучалась
+        с нуля на всём корпусе — минуты на больших данных). Новые слова расширяют словарь,
+        затем несколько шагов дообучения на новом факте + повтор старых (против забывания).
+        """
+        for tok in tokenizer.tokenize_text(chain_text):
+            tokenizer._add_token(tok)
+        n_new = tokenizer.vocab_size - self.vocab_size
+        if n_new > 0:
+            self._grow_rows("embed", n_new, 0.22)
+            self._grow_rows("w_out", n_new, 1.0 / math.sqrt(self.d_model))
+            self._grow_rows("b_out", n_new, 0.0)
+            self.vocab_size = tokenizer.vocab_size
+        seq = tokenizer.encode(chain_text)
+        if len(seq) > self.max_seq_len:
+            self._grow_rows("pos_embed", len(seq) - self.max_seq_len, 0.12)
+            self.max_seq_len = len(seq)
+        slot = len(self.slot_prompts)
+        if slot >= self.memory_slots:
+            self.mem_keys = np.concatenate([self.mem_keys, np.zeros((16, self.d_model), np.float32)])
+            self._grow_rows("mem_vals", 16, 0.0)
+            self.memory_slots += 16
+        self._write_slot(slot, seq, tokenizer)
+        self._qcache.clear()
+        hints = tokenizer.compute_complexity_hints(seq)
+        for _ in range(steps):
+            self.train_on_sequence(seq, hints, slot_idx=slot, lr=lr)
+            for _ in range(replay if slot > 0 else 0):
+                j = int(self.rng.integers(0, slot))
+                old = self.slot_full_seqs[j]
+                self.train_on_sequence(old, tokenizer.compute_complexity_hints(old), slot_idx=j, lr=lr)
+        return slot
+
+    # ------------------------------------------------ генерация ответа
 
     def _decode_slot_sequence(
         self,
@@ -959,33 +1023,26 @@ class TrainableSLRNetEngine:
         seq = [tokenizer.bos_id] + list(self.slot_prompts[slot_idx])
         generated_ids: List[int] = []
         telemetry: List[Dict[str, object]] = []
+        banned = [tokenizer.pad_id, tokenizer.bos_id, tokenizer.unk_id]
 
         for _ in range(max_new_tokens):
-            inp = np.array(seq, dtype=np.int32)
-            fwd = self.forward(inp, forced_slot=slot_idx)
-            logits_last = fwd["logits"][-1].copy()  # type: ignore
-
-            logits_last[tokenizer.pad_id] = -1e9
-            logits_last[tokenizer.bos_id] = -1e9
-            logits_last[tokenizer.unk_id] = -1e9
-
+            fwd = self.forward(np.array(seq, dtype=np.int32), forced_slot=slot_idx, copy_bias=self.copy_bias)
+            logits_last = fwd["logits"][-1].copy()
+            logits_last[banned] = -1e9
+            if not self.copy_bias:                # защита от зацикливания для «чистой» генерации сети
+                for r in generated_ids[-4:]:
+                    logits_last[r] -= 2.5
             next_id = int(np.argmax(logits_last))
             if next_id == tokenizer.eos_id:
                 break
-
-            tok_str = tokenizer.id_to_token[next_id]
-            c_prob = float(fwd["c_prob"][-1, 0])        # type: ignore
-            l_steps = int(fwd["latent_steps"][-1])      # type: ignore
-
             generated_ids.append(next_id)
             seq.append(next_id)
             telemetry.append({
-                "token": tok_str,
-                "complexity": c_prob,
-                "latent_steps": l_steps,
+                "token": tokenizer.id_to_token[next_id],
+                "complexity": float(fwd["c_prob"][-1, 0]),
+                "latent_steps": int(fwd["latent_steps"][-1]),
                 "memory_slot": slot_idx,
             })
-
             if len(seq) >= self.max_seq_len - 1:
                 break
 
@@ -998,55 +1055,52 @@ class TrainableSLRNetEngine:
         max_new_tokens: int = 85,
     ) -> Tuple[str, List[Dict[str, object]], Dict[str, object]]:
         """
-        Трёхуровневый когнитивный конвейер ответа:
-        1. Проверяет, является ли запрос логической задачей или вычислением (`EpistemicLogicEngine`).
-        2. Оценивает эпистемическую уверенность (`confidence`) и список неизвестных терминов (`unknown_words`).
-        3. При высокой уверенности — генерирует ответ через троичное ядро; при частичной или низкой —
-           честно сообщает о границе своих знаний и строит логический разбор без галлюцинаций.
+        1. Логическая задача или вычисление -> EpistemicLogicEngine (правила, а не нейросеть).
+        2. Поиск ближайшего вопроса в памяти и оценка уверенности.
+        3. Уверенно -> воспроизведение ответа из памяти; частично/неуверенно -> честное «не знаю».
         """
-        # Шаг 1. Аналитическое решение новых логических задач и вычислений
         logic_solution = EpistemicLogicEngine.try_solve_logic_or_math(prompt_text)
         if logic_solution is not None:
-            meta = {"mode": "logical_deduction", "confidence": 1.0, "unknown_words": []}
-            return logic_solution, [], meta
+            return logic_solution, [], {"mode": "logical_deduction", "confidence": 1.0, "unknown_words": []}
 
-        # Шаг 2. Оценка знания факта в памяти субтитров и книг
         best_slot, confidence, unknown_words = self.evaluate_epistemic_match(prompt_text, tokenizer)
 
-        # Режим 1: Уверенное знание (confidence >= 0.45 и нет неизвестных ключевых объектов)
-        if confidence >= 0.45 and len(unknown_words) == 0:
+        if confidence >= 0.45 and not unknown_words:
             reply_text, telemetry = self._decode_slot_sequence(best_slot, tokenizer, max_new_tokens)
-            meta = {"mode": "known_fact", "confidence": confidence, "unknown_words": []}
-            return reply_text, telemetry, meta
+            return reply_text, telemetry, {"mode": "known_fact", "confidence": confidence, "unknown_words": [],
+                                           "slot": best_slot}
 
-        # Режим 2: Частичное знание (есть смежный слот, но есть и неизвестная деталь)
         if confidence >= 0.25 and 0 <= best_slot < len(self.slot_prompts):
             partial_reply, telemetry = self._decode_slot_sequence(best_slot, tokenizer, max_new_tokens)
             honest_reply = EpistemicLogicEngine.build_honest_unknown_response(
-                prompt_text,
-                unknown_words,
-                best_partial_reply=partial_reply,
-                partial_confidence=confidence,
-            )
-            meta = {"mode": "partial_reasoning", "confidence": confidence, "unknown_words": unknown_words}
-            return honest_reply, telemetry, meta
+                prompt_text, unknown_words, best_partial_reply=partial_reply, partial_confidence=confidence)
+            return honest_reply, telemetry, {"mode": "partial_reasoning", "confidence": confidence,
+                                             "unknown_words": unknown_words, "slot": best_slot}
 
-        # Режим 3: Честное признание незнания (Epistemic Humility)
         honest_unknown = EpistemicLogicEngine.build_honest_unknown_response(
-            prompt_text, unknown_words, best_partial_reply=None, partial_confidence=confidence
-        )
-        meta = {"mode": "honest_unknown", "confidence": confidence, "unknown_words": unknown_words}
-        return honest_unknown, [], meta
+            prompt_text, unknown_words, best_partial_reply=None, partial_confidence=confidence)
+        return honest_unknown, [], {"mode": "honest_unknown", "confidence": confidence, "unknown_words": unknown_words}
+
+    def network_accuracy(self, use_copy: bool = False) -> float:
+        """Доля слов ответов, которые сеть угадывает сама (teacher forcing). Честная метрика качества сети."""
+        accs = []
+        for i, seq in enumerate(self.slot_full_seqs):
+            inp, tgt = np.array(seq[:-1]), np.array(seq[1:])
+            logits = self.forward(inp, forced_slot=i, copy_bias=self.copy_bias if use_copy else 0.0)["logits"]
+            accs.append(np.mean(np.argmax(logits, axis=-1) == tgt))
+        return float(np.mean(accs)) if accs else 0.0
+
+    # ------------------------------------------------ сохранение
 
     def save_checkpoint(self, path: str, tokenizer: RussianMorphemeTokenizer) -> float:
-        prompts_str = "\n".join(" ".join(map(str, p)) for p in self.slot_prompts)
-        seqs_str = "\n".join(" ".join(map(str, s)) for s in self.slot_full_seqs)
-
         pack_dict: Dict[str, object] = {
-            "vocab": np.array(tokenizer.id_to_token, dtype="<U64"),
+            "format_version": np.array([2], dtype=np.int32),
+            # Словарь одной строкой: раньше dtype="<U64" молча обрезал слова длиннее 64 символов
+            "vocab_str": np.array(["\n".join(tokenizer.id_to_token)]),
             "d_model": np.array([self.d_model], dtype=np.int32),
             "memory_slots": np.array([self.memory_slots], dtype=np.int32),
             "max_seq_len": np.array([self.max_seq_len], dtype=np.int32),
+            "max_latent_steps": np.array([self.max_latent_steps], dtype=np.int32),
             "embed": self.embed.astype(np.float16),
             "pos_embed": self.pos_embed.astype(np.float16),
             "b_out": self.b_out.astype(np.float16),
@@ -1054,19 +1108,15 @@ class TrainableSLRNetEngine:
             "b_router": self.b_router.astype(np.float16),
             "mem_keys": self.mem_keys.astype(np.float16),
             "mem_vals": self.mem_vals.astype(np.float16),
-            "prompts_str": np.array([prompts_str]),
-            "seqs_str": np.array([seqs_str]),
+            "prompts_str": np.array(["\n".join(" ".join(map(str, p)) for p in self.slot_prompts)]),
+            "seqs_str": np.array(["\n".join(" ".join(map(str, s)) for s in self.slot_full_seqs)]),
         }
-
-        ternary_names = ["w_ctx1", "w_ctx2", "w_ssm", "w_think", "w_out"]
-        for name in ternary_names:
-            w = getattr(self, name)
-            w_tern, gamma, _ = self.quantize_b158(w)
+        for name in TERNARY_NAMES:
+            w_tern, gamma, _ = self.quantize_b158(getattr(self, name))
             packed, shape = pack_ternary_matrix(w_tern)
             pack_dict[f"{name}_packed"] = packed
             pack_dict[f"{name}_shape"] = np.array(shape, dtype=np.int32)
             pack_dict[f"{name}_gamma"] = np.array([gamma], dtype=np.float32)
-
         np.savez_compressed(path, **pack_dict)
         return os.path.getsize(path) / 1024.0
 
@@ -1074,51 +1124,35 @@ class TrainableSLRNetEngine:
     def load_checkpoint(cls, path: str) -> Tuple["TrainableSLRNetEngine", RussianMorphemeTokenizer]:
         data = np.load(path, allow_pickle=False)
         tokenizer = RussianMorphemeTokenizer()
-        tokenizer.id_to_token = [str(t) for t in data["vocab"]]
-        tokenizer.token_to_id = {t: i for i, t in enumerate(tokenizer.id_to_token)}
-
-        d_model = int(data["d_model"][0])
-        memory_slots = int(data["memory_slots"][0])
-        max_seq_len = int(data["max_seq_len"][0]) if "max_seq_len" in data else 96
+        if "vocab_str" in data:
+            tokenizer.id_to_token = str(data["vocab_str"][0]).split("\n")
+        else:  # старый формат
+            tokenizer.id_to_token = [str(t) for t in data["vocab"]]
+        tokenizer.rebuild_index()
 
         engine = cls(
             vocab_size=tokenizer.vocab_size,
-            d_model=d_model,
-            memory_slots=memory_slots,
-            max_seq_len=max_seq_len,
+            d_model=int(data["d_model"][0]),
+            memory_slots=int(data["memory_slots"][0]),
+            max_seq_len=int(data["max_seq_len"][0]) if "max_seq_len" in data else 96,
+            max_latent_steps=int(data["max_latent_steps"][0]) if "max_latent_steps" in data else 3,
         )
-        engine.embed = data["embed"].astype(np.float32)
-        engine.pos_embed = data["pos_embed"].astype(np.float32)
-        engine.b_out = data["b_out"].astype(np.float32)
-        engine.w_router = data["w_router"].astype(np.float32)
-        engine.b_router = data["b_router"].astype(np.float32)
-        engine.mem_keys = data["mem_keys"].astype(np.float32)
-        engine.mem_vals = data["mem_vals"].astype(np.float32)
-
-        if "prompts_str" in data:
-            p_raw = str(data["prompts_str"][0])
-            engine.slot_prompts = [
-                [int(x) for x in line.split()] for line in p_raw.splitlines() if line.strip()
-            ]
-        if "seqs_str" in data:
-            s_raw = str(data["seqs_str"][0])
-            engine.slot_full_seqs = [
-                [int(x) for x in line.split()] for line in s_raw.splitlines() if line.strip()
-            ]
-
-        ternary_names = ["w_ctx1", "w_ctx2", "w_ssm", "w_think", "w_out"]
-        for name in ternary_names:
-            packed = data[f"{name}_packed"]
+        for name in ("embed", "pos_embed", "b_out", "w_router", "b_router", "mem_keys", "mem_vals"):
+            setattr(engine, name, data[name].astype(np.float32))
+        for key, attr in (("prompts_str", "slot_prompts"), ("seqs_str", "slot_full_seqs")):
+            if key in data:
+                raw = str(data[key][0])
+                setattr(engine, attr, [[int(x) for x in line.split()] for line in raw.splitlines() if line.strip()])
+        for name in TERNARY_NAMES:
             shape = tuple(int(x) for x in data[f"{name}_shape"])
             gamma = float(data[f"{name}_gamma"][0])
-            w_tern = unpack_ternary_matrix(packed, shape)
-            setattr(engine, name, w_tern.astype(np.float32) * gamma)
-
+            setattr(engine, name, unpack_ternary_matrix(data[f"{name}_packed"], shape).astype(np.float32) * gamma)
+        engine._reset_optimizer()
         return engine, tokenizer
 
 
 # =============================================================================
-# 7. КОНВЕЙЕР ОБУЧЕНИЯ НА СУБТИТРАХ И ИНТЕРАКТИВНЫЙ ЧАТ С ДООБУЧЕНИЕМ НА ЛЕТУ
+# 7. КОНВЕЙЕР ОБУЧЕНИЯ И ИНТЕРАКТИВНЫЙ ЧАТ С ДООБУЧЕНИЕМ НА ЛЕТУ
 # =============================================================================
 
 def train_model_on_corpus(
@@ -1127,6 +1161,8 @@ def train_model_on_corpus(
     epochs: int = 8,
     lr: float = 0.008,
     save_path: Optional[str] = None,
+    copy_bias: float = 5.5,
+    verbose: bool = True,
 ) -> Tuple[TrainableSLRNetEngine, RussianMorphemeTokenizer]:
     chains = parse_subtitle_or_text_corpus(corpus_text)
     tokenizer = RussianMorphemeTokenizer()
@@ -1135,79 +1171,58 @@ def train_model_on_corpus(
     sequences: List[List[int]] = []
     hints_list: List[np.ndarray] = []
     max_len = 96
-
     for line in chains:
         ids = tokenizer.encode(line, add_bos=True, add_eos=True)
         if len(ids) >= 4:
             sequences.append(ids)
             hints_list.append(tokenizer.compute_complexity_hints(ids))
-            if len(ids) > max_len:
-                max_len = len(ids) + 4
+            max_len = max(max_len, len(ids) + 4)
 
     engine = TrainableSLRNetEngine(
         vocab_size=tokenizer.vocab_size,
         d_model=d_model,
         memory_slots=max(64, len(sequences) + 16),
         max_seq_len=max_len,
+        copy_bias=copy_bias,
     )
     engine.populate_fact_memory(sequences, tokenizer)
 
-    print("=" * 86)
-    print("ОБУЧЕНИЕ ТРОИЧНОЙ МОДЕЛИ SLR-Net НА КОРПУСЕ КИНОСУБТИТРОВ И ЛОГИЧЕСКИХ ЦЕПОЧЕК")
-    print("=" * 86)
-    print(f"• Объём словаря токенизатора     : {tokenizer.vocab_size} слов и морфем")
-    print(f"• Диалоговых сцен и цепочек      : {len(sequences)}")
-    print(f"• Размерность вектора мысли      : d_model = {d_model}")
-    print("-" * 86)
+    log = print if verbose else (lambda *a, **k: None)
+    log("=" * 86)
+    log("ОБУЧЕНИЕ ТРОИЧНОЙ МИКРО-СЕТИ SLR-Net НА КОРПУСЕ ДИАЛОГОВ")
+    log("=" * 86)
+    log(f"• Объём словаря (словоформ)      : {tokenizer.vocab_size}")
+    log(f"• Диалоговых цепочек в памяти    : {len(sequences)}")
+    log(f"• Размерность вектора мысли      : d_model = {d_model}")
+    log("• Метрики ниже — БЕЗ подсказки ответа (раньше подсказка давала ложные ~100%)")
+    log("-" * 86)
 
     t0 = time.time()
+    order = np.arange(len(sequences))
     for epoch in range(1, epochs + 1):
-        cur_lr = lr * (0.2 + 0.8 * 0.5 * (1.0 + math.cos(math.pi * epoch / max(1, epochs))))
-        epoch_loss = 0.0
-        epoch_acc = 0.0
-        epoch_routed = 0.0
-        epoch_steps = 0.0
-        epoch_sparsity = 0.0
-
-        for idx, (seq, hints) in enumerate(zip(sequences, hints_list)):
-            stats = engine.train_on_sequence(seq, hints, slot_idx=idx, lr=cur_lr)
-            epoch_loss += stats["loss"]
-            epoch_acc += stats["accuracy"]
-            epoch_routed += stats["routed_ratio"]
-            epoch_steps += stats["avg_latent_steps"]
-            epoch_sparsity += stats["sparsity"]
-
+        cur_lr = lr * (0.2 + 0.8 * 0.5 * (1.0 + math.cos(math.pi * (epoch - 1) / max(1, epochs))))
+        totals = np.zeros(5)
+        engine.rng.shuffle(order)            # перемешивание примеров каждую эпоху
+        for idx in order:
+            st = engine.train_on_sequence(sequences[idx], hints_list[idx], slot_idx=int(idx), lr=cur_lr)
+            totals += [st["loss"], st["accuracy"], st["routed_ratio"], st["avg_latent_steps"], st["sparsity"]]
         n = max(1, len(sequences))
         if epoch == 1 or epoch % 2 == 0 or epoch == epochs:
-            print(
-                f"Эпоха {epoch:2d}/{epochs} | "
-                f"Loss: {epoch_loss/n:.4f} | "
-                f"Точность: {(epoch_acc/n)*100:5.1f}% | "
-                f"В цикле мысли: {(epoch_routed/n)*100:4.1f}% слов | "
-                f"Ср. тактов Coconut: {epoch_steps/n:.2f} | "
-                f"Нулевых синапсов: {(epoch_sparsity/n)*100:.1f}%"
-            )
+            log(f"Эпоха {epoch:2d}/{epochs} | Loss: {totals[0] / n:.4f} | Точность сети: {totals[1] / n * 100:5.1f}% | "
+                f"В цикле мысли: {totals[2] / n * 100:4.1f}% слов | Ср. тактов: {totals[3] / n:.2f} | "
+                f"Нулевых синапсов: {totals[4] / n * 100:.1f}%")
 
-    elapsed = time.time() - t0
-    print("-" * 86)
-    print(f"Обучение завершено за {elapsed:.2f} сек.")
-
+    log("-" * 86)
+    log(f"Обучение завершено за {time.time() - t0:.2f} сек.")
     if save_path:
         size_kb = engine.save_checkpoint(save_path, tokenizer)
-        print(
-            f"Обученные троичные веса упакованы (5 тритов в 1 байт) и сохранены в файл: "
-            f"{save_path} ({size_kb:.1f} КБ)"
-        )
-
+        log(f"Троичные веса упакованы (5 тритов в 1 байт) и сохранены: {save_path} ({size_kb:.1f} КБ)")
     return engine, tokenizer
 
 
-def run_demo_dialog(
-    engine: TrainableSLRNetEngine,
-    tokenizer: RussianMorphemeTokenizer,
-) -> None:
+def run_demo_dialog(engine: TrainableSLRNetEngine, tokenizer: RussianMorphemeTokenizer) -> None:
     print("\n" + "=" * 86)
-    print("ПРОВЕРКА: 1) КИНОСУБТИТРЫ, 2) ЛОГИЧЕСКОЕ МЫШЛЕНИЕ, 3) ЧЕСТНОЕ ПРИЗНАНИЕ НЕЗНАНИЯ")
+    print("ПРОВЕРКА: 1) ПАМЯТЬ ДИАЛОГОВ, 2) ЛОГИЧЕСКИЙ МОДУЛЬ, 3) ЧЕСТНОЕ ПРИЗНАНИЕ НЕЗНАНИЯ")
     print("=" * 86)
 
     test_cases = [
@@ -1216,23 +1231,31 @@ def run_demo_dialog(
         ("Логическая загадка", "Ты бежишь марафон и обгоняешь бегуна который бежал вторым на каком ты теперь месте?"),
         ("Новая логическая задача (нет в корпусе!)", "Если сокол быстрее орла, а орёл быстрее воробья, кто самый медленный?"),
         ("Новое вычисление (нет в корпусе!)", "Сколько будет двадцать пять умножить на четыре минус пятнадцать?"),
+        ("Не арифметика (диапазон лет)", "Что было в 1941-1945 годах?"),
         ("Заведомо неизвестный факт #1", "Какая столица у государства Мадагаскар?"),
         ("Заведомо неизвестный факт #2", "Кто изобрёл первый квантовый синхрофазотрон в 1999 году?"),
     ]
-
+    labels = {
+        "known_fact": "Ответ из памяти диалогов (уверенность {c:.0f}%)",
+        "logical_deduction": "Логический модуль (правила)",
+        "partial_reasoning": "Гипотеза при неполных данных (уверенность {c:.0f}%)",
+        "honest_unknown": "Честное признание незнания (уверенность {c:.0f}%, неизвестно: {u})",
+    }
     for category, q in test_cases:
         reply, _, meta = engine.generate_reply(q, tokenizer)
-        mode_label = {
-            "known_fact": f"Точное знание из памяти (уверенность {meta['confidence']*100:.0f}%)",
-            "logical_deduction": "Аналитический модуль логического вывода (System 2)",
-            "partial_reasoning": f"Логическая гипотеза при неполных данных (уверенность {meta['confidence']*100:.0f}%)",
-            "honest_unknown": f"Честное признание незнания (уверенность {meta['confidence']*100:.0f}%, неизвестно: {meta['unknown_words']})",
-        }.get(str(meta.get("mode")), "")
-
+        label = labels.get(str(meta.get("mode")), "").format(c=float(meta["confidence"]) * 100,
+                                                            u=meta["unknown_words"])
         print(f"\n[{category}]")
         print(f"Вы      : {q}")
         print(f"SLR-Net : {reply}")
-        print(f"  └─ Режим мышления: {mode_label}")
+        print(f"  └─ Режим: {label}")
+
+    print("\n" + "-" * 86)
+    print(f"Честная метрика: сеть САМА угадывает {engine.network_accuracy() * 100:.1f}% слов ответов "
+          f"(с подсказкой копирования из памяти — {engine.network_accuracy(use_copy=True) * 100:.1f}%).")
+
+
+_NOT_AN_ANSWER = re.compile(r"^(нет|не знаю|забудь|ладно|проехали|неважно|отмена|стоп|/)", re.IGNORECASE)
 
 
 def interactive_chat_loop(
@@ -1243,12 +1266,13 @@ def interactive_chat_loop(
 ) -> None:
     print("\n" + "=" * 86)
     print("ЖИВОЙ ЧАТ С МОДЕЛЬЮ SLR-Net")
-    print("• Команды: '/обучить путь_к_файлу.txt' — дообучить на вашем .txt/.srt файле субтитров")
-    print("•          '/рентген' — вкл/выкл телеметрию, 'выход' — завершить диалог")
-    print("• Если модель чего-то не знает, просто напишите ей ответ следующей фразой — она запомнит!")
+    print("• '/обучить путь_к_файлу.txt' — переобучить на корпусе + вашем .txt/.srt файле")
+    print("• '/рентген' — телеметрия, '/копия' — вкл/выкл подсказку копирования из памяти")
+    print("• 'выход' — завершить. Если модель чего-то не знает — напишите ответ следующей фразой.")
     print("=" * 86)
 
     show_xray = False
+    saved_copy_bias = engine.copy_bias or 5.5
     pending_unknown_question: Optional[str] = None
 
     while True:
@@ -1258,32 +1282,36 @@ def interactive_chat_loop(
             print("\nДо скорой встречи!")
             break
 
-        if not user_input or user_input.lower() in ("выход", "exit", "quit", "q"):
+        low = user_input.lower()
+        if not user_input or low in ("выход", "exit", "quit", "q"):
             print("SLR-Net: До свидания! Мы обязательно продолжим наш разговор. Береги себя!")
             break
 
-        if user_input.lower() in ("/рентген", "/xray"):
+        if low in ("/рентген", "/xray"):
             show_xray = not show_xray
-            print(f"  [Режим энерго-телеметрии: {'ВКЛЮЧЁН' if show_xray else 'ВЫКЛЮЧЕН'}]")
+            print(f"  [Телеметрия: {'ВКЛЮЧЕНА' if show_xray else 'ВЫКЛЮЧЕНА'}]")
             continue
 
-        if user_input.lower().startswith("/обучить "):
+        if low in ("/копия", "/copy"):
+            engine.copy_bias = 0.0 if engine.copy_bias else saved_copy_bias
+            print(f"  [Подсказка копирования: {'ВКЛ' if engine.copy_bias else 'ВЫКЛ — теперь вы видите, что генерирует сама сеть'}]")
+            continue
+
+        if low.startswith("/обучить "):
             custom_path = user_input[9:].strip().strip('"').strip("'")
             if os.path.exists(custom_path):
                 with open(custom_path, "r", encoding="utf-8", errors="ignore") as f:
-                    add_text = f.read()
-                corpus_text = corpus_text.strip() + "\n" + add_text
+                    corpus_text = corpus_text.strip() + "\n" + f.read()
                 engine, tokenizer = train_model_on_corpus(
-                    corpus_text, d_model=engine.d_model, epochs=6, save_path=save_path
-                )
-                print("SLR-Net: Отлично! Я прочитал новый файл субтитров/текста и обновил свои троичные веса!")
+                    corpus_text, d_model=engine.d_model, epochs=6, save_path=save_path, copy_bias=engine.copy_bias)
+                print("SLR-Net: Отлично! Я прочитал новый файл и обновил свои троичные веса!")
             else:
                 print(f"  [Файл не найден по пути: {custom_path}]")
             continue
 
-        # Если на предыдущем шаге модель честно призналась, что не знает ответа,
-        # а сейчас пользователь написал утверждение-объяснение (без знака '?') — запоминаем на лету!
-        if pending_unknown_question and "?" not in user_input and len(user_input.split()) >= 2:
+        # Если модель только что призналась, что не знает, а сейчас пришло утверждение — запоминаем
+        if (pending_unknown_question and "?" not in user_input and len(user_input.split()) >= 2
+                and not _NOT_AN_ANSWER.match(user_input)):
             q_clean = pending_unknown_question.strip()
             if q_clean[-1] not in ("?", "!", "."):
                 q_clean += " ?"
@@ -1292,82 +1320,42 @@ def interactive_chat_loop(
                 a_clean += " ."
             new_chain = f"{q_clean} {a_clean}"
             corpus_text = corpus_text.strip() + "\n" + new_chain
-            engine, tokenizer = train_model_on_corpus(
-                corpus_text, d_model=engine.d_model, epochs=4, save_path=save_path
-            )
+            t0 = time.time()
+            engine.add_fact(new_chain, tokenizer)
+            if save_path:
+                engine.save_checkpoint(save_path, tokenizer)
             pending_unknown_question = None
-            print(
-                f"SLR-Net: Спасибо, что объяснил! Я записал этот факт во внешнюю память и дообучил "
-                f"троичное ядро. Можешь спросить меня об этом снова — теперь я отвечу точно!"
-            )
+            print(f"SLR-Net: Спасибо, что объяснил! Я записал этот факт в память за {time.time() - t0:.2f} с. "
+                  f"Можешь спросить меня об этом снова!")
             continue
 
         reply, telemetry, meta = engine.generate_reply(user_input, tokenizer)
         print(f"SLR-Net: {reply}")
-
-        if meta.get("mode") in ("honest_unknown", "partial_reasoning"):
-            pending_unknown_question = user_input
-        else:
-            pending_unknown_question = None
+        pending_unknown_question = user_input if meta.get("mode") in ("honest_unknown", "partial_reasoning") else None
 
         if show_xray:
             thought_words = sum(1 for item in telemetry if int(item["latent_steps"]) > 0)
-            print(
-                f"  [Телеметрия: режим={meta.get('mode')}, уверенность={float(meta.get('confidence', 0))*100:.0f}%, "
-                f"слов в цикле Coconut={thought_words}/{len(telemetry)}]"
-            )
+            print(f"  [Телеметрия: режим={meta.get('mode')}, уверенность={float(meta.get('confidence', 0)) * 100:.0f}%, "
+                  f"слов в цикле мысли={thought_words}/{len(telemetry)}]")
 
 
 def main() -> None:
-    parser = argparse.ArgumentParser(
-        description="Тренажёр на киносубтитрах (.txt / .srt) и логический чат для модели SLR-Net"
-    )
-    parser.add_argument(
-        "--corpus",
-        type=str,
-        default="corpus_movie_subtitles_and_logic.txt",
-        help="Путь к вашему текстовому файлу (.txt или .srt) с субтитрами или диалогами для обучения",
-    )
-    parser.add_argument(
-        "--epochs",
-        type=int,
-        default=6,
-        help="Число эпох обучения (по умолчанию: 6)",
-    )
-    parser.add_argument(
-        "--d-model",
-        type=int,
-        default=96,
-        help="Размерность скрытого вектора мысли (по умолчанию: 96)",
-    )
-    parser.add_argument(
-        "--save",
-        type=str,
-        default="slr_net_trained.npz",
-        help="Файл для сохранения упакованных троичных весов (по умолчанию: slr_net_trained.npz)",
-    )
-    parser.add_argument(
-        "--load",
-        type=str,
-        default=None,
-        help="Загрузить уже обученные веса из файла .npz без повторного обучения",
-    )
-    parser.add_argument(
-        "--no-chat",
-        action="store_true",
-        help="Не запускать интерактивный ввод после демонстрации",
-    )
+    parser = argparse.ArgumentParser(description="Поисковый чат-прототип SLR-Net на субтитрах (.txt / .srt)")
+    parser.add_argument("--corpus", type=str, default="corpus_movie_subtitles_and_logic.txt",
+                        help="Путь к текстовому файлу (.txt или .srt) с диалогами для обучения")
+    parser.add_argument("--epochs", type=int, default=6, help="Число эпох обучения (по умолчанию: 6)")
+    parser.add_argument("--d-model", type=int, default=96, help="Размерность скрытого вектора (по умолчанию: 96)")
+    parser.add_argument("--save", type=str, default="slr_net_trained.npz", help="Куда сохранить веса")
+    parser.add_argument("--load", type=str, default=None, help="Загрузить обученные веса .npz без обучения")
+    parser.add_argument("--copy-bias", type=float, default=5.5,
+                        help="Сила подсказки копирования ответа из памяти при генерации (0 — только сеть)")
+    parser.add_argument("--no-chat", action="store_true", help="Не запускать интерактивный чат после демонстрации")
     args = parser.parse_args()
 
     script_dir = os.path.dirname(os.path.abspath(__file__))
-    candidate_paths = [
-        args.corpus,
-        os.path.join(script_dir, args.corpus),
-        os.path.join(script_dir, "corpus_movie_subtitles_and_logic.txt"),
-        os.path.join(script_dir, "corpus_russian_book_and_dialogues.txt"),
-    ]
-    corpus_text = ""
-    loaded_corpus_path = ""
+    candidate_paths = [args.corpus, os.path.join(script_dir, args.corpus),
+                       os.path.join(script_dir, "corpus_movie_subtitles_and_logic.txt")]
+    corpus_text, loaded_corpus_path = "", ""
     for p in candidate_paths:
         if p and os.path.exists(p):
             with open(p, "r", encoding="utf-8", errors="ignore") as f:
@@ -1375,21 +1363,24 @@ def main() -> None:
             loaded_corpus_path = p
             break
 
-    if args.load and os.path.exists(args.load):
-        print(f"Загрузка обученного троичного чекпоинта из: {args.load} ...")
-        engine, tokenizer = TrainableSLRNetEngine.load_checkpoint(args.load)
+    load_path = args.load
+    if load_path and not os.path.exists(load_path) and os.path.exists(os.path.join(script_dir, load_path)):
+        load_path = os.path.join(script_dir, load_path)
+
+    if load_path and os.path.exists(load_path):
+        print(f"Загрузка обученного троичного чекпоинта из: {load_path} ...")
+        engine, tokenizer = TrainableSLRNetEngine.load_checkpoint(load_path)
+        engine.copy_bias = args.copy_bias
     else:
+        if args.load:
+            print(f"Чекпоинт {args.load} не найден — обучаю модель заново.")
         if not corpus_text:
             raise FileNotFoundError(
-                f"Не найден файл корпуса '{args.corpus}'. Укажите путь через: python slr_net_trainer_chat.py --corpus путь_к_файлу.txt"
-            )
-        print(f"Прочитан файл субтитров и диалогов: {loaded_corpus_path} ({len(corpus_text)} символов)")
+                f"Не найден файл корпуса '{args.corpus}'. Укажите путь: python slr_net_trainer_chat.py --corpus файл.txt")
+        print(f"Прочитан файл диалогов: {loaded_corpus_path} ({len(corpus_text)} символов)")
         engine, tokenizer = train_model_on_corpus(
-            corpus_text=corpus_text,
-            d_model=args.d_model,
-            epochs=args.epochs,
-            save_path=args.save,
-        )
+            corpus_text=corpus_text, d_model=args.d_model, epochs=args.epochs,
+            save_path=args.save, copy_bias=args.copy_bias)
 
     run_demo_dialog(engine, tokenizer)
 
