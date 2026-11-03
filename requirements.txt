@@ -1,0 +1,9 @@
+# Чат-прототип (slr_net_trainer_chat.py) и самопроверка NumPy-части движка
+numpy>=1.24
+
+# Настоящая языковая модель (slr_net_engine.py, train_lm.py)
+torch>=2.2
+sentencepiece>=0.2
+
+# Тесты: pytest; браузерные тесты мобильного чата — ещё playwright (+ playwright install chromium)
+pytest>=7

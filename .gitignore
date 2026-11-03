@@ -1,0 +1,7 @@
+__pycache__/
+*.pyc
+.pytest_cache/
+# Данные и чекпоинты больших обучений (train_lm.py) — не храним в git
+data/
+runs/
+*.pt
