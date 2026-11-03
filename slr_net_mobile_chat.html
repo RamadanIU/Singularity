@@ -216,6 +216,105 @@
       background: linear-gradient(90deg, #8b5cf6, #06b6d4);
       transition: width 0.25s ease;
     }
+    /* Переключатель модели «Обычная / mini» и панель mini (работают и без Tailwind) */
+    .mode-bar {
+      padding: 0.5rem 0.85rem 0;
+      flex-shrink: 0;
+    }
+    .mode-switch {
+      display: grid;
+      grid-template-columns: 1fr 1fr;
+      gap: 4px;
+      padding: 4px;
+      border-radius: 14px;
+      background: rgba(15, 23, 42, 0.9);
+      border: 1px solid rgba(148, 163, 184, 0.18);
+    }
+    .mode-btn {
+      display: flex;
+      flex-direction: column;
+      align-items: center;
+      gap: 1px;
+      padding: 6px 4px;
+      border-radius: 10px;
+      border: 1px solid transparent;
+      background: transparent;
+      color: #94a3b8;
+      font-size: 0.82rem;
+      font-weight: 700;
+      line-height: 1.15;
+      cursor: pointer;
+    }
+    .mode-btn small {
+      font-size: 0.66rem;
+      font-weight: 500;
+      color: #64748b;
+    }
+    .mode-btn.active {
+      background: linear-gradient(90deg, rgba(139, 92, 246, 0.32), rgba(6, 182, 212, 0.26));
+      border-color: rgba(139, 92, 246, 0.55);
+      color: #f8fafc;
+    }
+    .mode-btn.active small {
+      color: #cbd5e1;
+    }
+    .mini-panel {
+      margin: 0.5rem 0.85rem 0.3rem;
+      padding: 0.6rem 0.75rem;
+      border-radius: 14px;
+      background: rgba(2, 6, 23, 0.82);
+      border: 1px solid rgba(6, 182, 212, 0.32);
+      font-size: 0.75rem;
+      color: #cbd5e1;
+      flex-shrink: 0;
+    }
+    .mini-row {
+      display: flex;
+      flex-wrap: wrap;
+      align-items: center;
+      gap: 0.5rem;
+    }
+    .mini-panel .mini-btn {
+      padding: 0.4rem 0.65rem;
+      border-radius: 10px;
+      font-size: 0.75rem;
+      font-weight: 600;
+      border: 1px solid rgba(148, 163, 184, 0.3);
+      background: rgba(30, 41, 59, 0.9);
+      color: #e2e8f0;
+      cursor: pointer;
+    }
+    .mini-panel .mini-btn.primary {
+      background: linear-gradient(90deg, #7c3aed, #0891b2);
+      border-color: transparent;
+      color: #ffffff;
+    }
+    .mini-panel .mini-btn:disabled {
+      opacity: 0.55;
+      cursor: default;
+    }
+    .mini-panel .mini-select {
+      background: #0f172a;
+      color: #e2e8f0;
+      border: 1px solid #334155;
+      border-radius: 8px;
+      padding: 1px 2px;
+      font-size: 0.72rem;
+      line-height: 1.3;
+    }
+    .mini-panel .mini-icon-btn {
+      margin-left: auto;
+      padding: 0.15rem 0.45rem;
+      border-radius: 8px;
+      border: 1px solid rgba(148, 163, 184, 0.25);
+      background: transparent;
+      color: #94a3b8;
+      font-size: 0.7rem;
+      cursor: pointer;
+    }
+    .mini-reply-line + .mini-reply-line {
+      margin-top: 0.2rem;
+    }
     .hidden {
       display: none !important;
     }
@@ -266,6 +365,59 @@
 
     <!-- ВКЛАДКА 1: МОБИЛЬНЫЙ ЧАТ -->
     <main id="tabChatView" class="main-viewport flex flex-col">
+      <!-- Переключатель модели: обычная (поиск по памяти + логика) или mini (обученная генеративная LLM) -->
+      <div class="mode-bar">
+        <div class="mode-switch" role="tablist" aria-label="Какая модель отвечает">
+          <button id="modeRegularBtn" type="button" class="mode-btn active" role="tab" aria-selected="true">
+            Обычная<small>поиск по памяти, логика</small>
+          </button>
+          <button id="modeMiniBtn" type="button" class="mode-btn" role="tab" aria-selected="false">
+            mini · LLM<small>обучена на 2.3 ГБ субтитров</small>
+          </button>
+        </div>
+      </div>
+
+      <!-- Панель mini: загрузка весов или настройки ответа -->
+      <div id="miniPanel" class="mini-panel hidden">
+        <div id="miniLoadBox" class="space-y-2">
+          <div class="leading-snug">
+            <b class="text-cyan-300">mini</b> — генеративная модель (12.3 млн параметров, обучена на 2.3 ГБ русских
+            субтитров): сама сочиняет следующую реплику, но фактов не знает. Веса (8.9 МБ) загружаются один раз
+            и сохраняются в браузере.
+          </div>
+          <div class="mini-row">
+            <button id="miniDownloadBtn" type="button" class="mini-btn primary">⬇ Скачать с GitHub (8.9 МБ)</button>
+            <button id="miniPickBtn" type="button" class="mini-btn">📂 Выбрать файл .npz</button>
+            <input id="miniFileInput" type="file" accept=".npz,application/octet-stream" class="hidden" />
+          </div>
+          <div id="miniLoadProgress" class="hidden space-y-1" role="status" aria-live="polite">
+            <div class="progress-track"><div id="miniLoadFill" class="progress-fill"></div></div>
+            <div id="miniLoadText" class="mono text-[11px] text-slate-400"></div>
+          </div>
+        </div>
+        <div id="miniReadyBox" class="hidden space-y-1">
+          <div id="miniStatusText" class="text-[11px] text-emerald-300 leading-snug">✅ mini готова</div>
+          <div class="mini-row text-[11px] text-slate-400" style="flex-wrap: nowrap">
+            <label>Реплик в ответе
+              <select id="miniLinesSelect" class="mini-select">
+                <option value="1">1</option>
+                <option value="2" selected>2</option>
+                <option value="3">3</option>
+                <option value="5">5</option>
+              </select>
+            </label>
+            <label>Фантазия
+              <select id="miniTempSelect" class="mini-select">
+                <option value="0.5">сдержанно</option>
+                <option value="0.8" selected>обычно</option>
+                <option value="1.0">смело</option>
+              </select>
+            </label>
+            <button id="miniForgetBtn" type="button" class="mini-icon-btn" title="Удалить сохранённые веса из памяти браузера" aria-label="Удалить веса mini из памяти браузера">✕</button>
+          </div>
+        </div>
+      </div>
+
       <!-- Лента сообщений -->
       <div id="chatMessagesContainer" class="flex-1 overflow-y-auto px-3.5 py-4 space-y-3.5">
         <!-- Приветственная карточка архитектуры -->
@@ -314,6 +466,19 @@
           <button type="button" class="chip-btn" data-prompt="почему зимой холодно ?">❄️ Почему зимой холодно?</button>
           <button type="button" class="chip-btn" data-prompt="сколько будет два плюс два ?">🔢 2 + 2 = ?</button>
         </div>
+        <!-- Быстрые реплики для mini: модель продолжает диалог в стиле субтитров -->
+        <div id="miniQuickPromptsBar" class="chip-scroll no-scrollbar hidden">
+          <button type="button" class="chip-btn" data-prompt="Привет! Как дела?">👋 Привет! Как дела?</button>
+          <button type="button" class="chip-btn" data-prompt="Где ты был всю ночь?">🌙 Где ты был всю ночь?</button>
+          <button type="button" class="chip-btn" data-prompt="Доктор, что с ним?">🩺 Доктор, что с ним?</button>
+          <button type="button" class="chip-btn" data-prompt="Я тебя люблю.">❤️ Я тебя люблю.</button>
+          <button type="button" class="chip-btn" data-prompt="Мы должны уходить, сейчас же!">🏃 Уходим, сейчас же!</button>
+          <button type="button" class="chip-btn" data-prompt="Расскажи мне, что случилось.">❓ Что случилось?</button>
+          <button type="button" class="chip-btn" data-prompt="Капитан, корабль готов к отплытию.">⚓ Капитан, корабль готов</button>
+          <button type="button" class="chip-btn" data-prompt="Почему ты мне не сказал?">😠 Почему ты не сказал?</button>
+          <button type="button" class="chip-btn" data-prompt="Кто здесь?">🔦 Кто здесь?</button>
+          <button type="button" class="chip-btn" data-prompt="Спасибо, что пришёл.">🙏 Спасибо, что пришёл</button>
+        </div>
 
         <!-- Нижняя строка ввода сообщения -->
         <form id="chatInputForm" class="px-3 pb-2.5 pt-1 flex items-center gap-2">
@@ -357,6 +522,9 @@
         </div>
         <p class="text-xs text-slate-400 leading-relaxed">
           Добавьте любую новую фразу или пару <code class="text-cyan-300">вопрос ? ответ .</code> в корпус ниже и нажмите <b>«Дообучить модель»</b>. Прямо в браузере телефона пройдёт градиентное обучение со Straight-Through Estimator и квантованием весов в <code class="text-amber-300">{-1, 0, +1}</code>.
+        </p>
+        <p class="text-[11px] text-slate-500 leading-relaxed">
+          Здесь дообучается <b>«Обычная»</b> модель. Модель <b>mini</b> обучена на компьютере (<code>train_lm.py</code>, 2.3 ГБ субтитров, 6 часов) — в браузере она только отвечает.
         </p>
 
         <!-- Быстрое добавление одного правила/факта -->
@@ -563,6 +731,784 @@
   <!-- ========================================================================= -->
   <!-- ПОЛНОЕ МАТЕМАТИЧЕСКОЕ ЯДРО SLR-Net НА JAVASCRIPT (БЕЗ ВНЕШНИХ СЕРВЕРОВ)   -->
   <!-- ========================================================================= -->
+  <script>
+    // =============================================================================================
+    //  SLR-Net «mini» — настоящая обученная LLM (12.3 млн параметров, русские субтитры) в браузере.
+    //  Читает тот же файл весов slr_net_subtitles_ru_mini.npz, что и train_lm.py, и повторяет
+    //  пошаговый проход SLRNetLanguageModel.step() из slr_net_engine.py:
+    //    эмбеддинг -> 6 слоёв (Mamba-2, каждый 3-й — локальное внимание + MLP) -> ядро мышления
+    //    (память фактов + 2 слоя Mamba-2, до 3 повторов, решает роутер) -> 3 слоя -> RMSNorm -> логиты.
+    //  Троичные матрицы {-1, 0, +1} умножаются на int8-активации целочисленно (как в BitNet b1.58).
+    //  Совпадение с PyTorch проверяется браузерным тестом (tests/test_mobile_html.py).
+    // =============================================================================================
+    const SLRMini = (() => {
+      "use strict";
+
+      // ------------------------------------------------------------------ чтение .npz (zip + .npy)
+      async function inflateRaw(bytes) {
+        if (typeof DecompressionStream === "undefined") {
+          throw new Error("Браузер слишком старый для распаковки весов (нужен Chrome 80+, Safari 16.4+ или Firefox 113+)");
+        }
+        const stream = new Blob([bytes]).stream().pipeThrough(new DecompressionStream("deflate-raw"));
+        return new Uint8Array(await new Response(stream).arrayBuffer());
+      }
+
+      async function readZip(buffer, onProgress) {
+        const u8 = new Uint8Array(buffer);
+        const dv = new DataView(buffer);
+        let eocd = -1;
+        for (let i = u8.length - 22; i >= Math.max(0, u8.length - 65557); i--) {
+          if (dv.getUint32(i, true) === 0x06054b50) { eocd = i; break; }
+        }
+        if (eocd < 0) throw new Error("Это не файл весов .npz");
+        let nEntries = dv.getUint16(eocd + 10, true);
+        let cdOffset = dv.getUint32(eocd + 16, true);
+        if ((cdOffset === 0xFFFFFFFF || nEntries === 0xFFFF) && eocd >= 20 && dv.getUint32(eocd - 20, true) === 0x07064b50) {
+          const z64 = Number(dv.getBigUint64(eocd - 12, true));        // ZIP64: настоящий конец каталога
+          nEntries = Number(dv.getBigUint64(z64 + 32, true));
+          cdOffset = Number(dv.getBigUint64(z64 + 48, true));
+        }
+        const entries = [];
+        let p = cdOffset;
+        for (let e = 0; e < nEntries; e++) {
+          if (dv.getUint32(p, true) !== 0x02014b50) throw new Error("Файл весов повреждён (каталог zip)");
+          const method = dv.getUint16(p + 10, true);
+          let csize = dv.getUint32(p + 20, true);
+          let usize = dv.getUint32(p + 24, true);
+          const nlen = dv.getUint16(p + 28, true), xlen = dv.getUint16(p + 30, true), clen = dv.getUint16(p + 32, true);
+          let lho = dv.getUint32(p + 42, true);
+          const name = new TextDecoder().decode(u8.subarray(p + 46, p + 46 + nlen));
+          let x = p + 46 + nlen;
+          const xend = x + xlen;
+          while (x + 4 <= xend) {                                       // ZIP64-поле с настоящими размерами
+            const id = dv.getUint16(x, true), sz = dv.getUint16(x + 2, true);
+            if (id === 0x0001) {
+              let q = x + 4;
+              if (usize === 0xFFFFFFFF) { usize = Number(dv.getBigUint64(q, true)); q += 8; }
+              if (csize === 0xFFFFFFFF) { csize = Number(dv.getBigUint64(q, true)); q += 8; }
+              if (lho === 0xFFFFFFFF) { lho = Number(dv.getBigUint64(q, true)); q += 8; }
+            }
+            x += 4 + sz;
+          }
+          entries.push({ name, method, csize, lho });
+          p = xend + clen;
+        }
+        const files = new Map();
+        for (let i = 0; i < entries.length; i++) {
+          const en = entries[i];
+          if (dv.getUint32(en.lho, true) !== 0x04034b50) throw new Error("Файл весов повреждён (заголовок zip)");
+          const start = en.lho + 30 + dv.getUint16(en.lho + 26, true) + dv.getUint16(en.lho + 28, true);
+          const raw = u8.subarray(start, start + en.csize);
+          let data;
+          if (en.method === 0) data = raw.slice();
+          else if (en.method === 8) data = await inflateRaw(raw);
+          else throw new Error("Неизвестный способ сжатия в файле весов: " + en.method);
+          files.set(en.name.replace(/\.npy$/, ""), data);
+          if (onProgress) onProgress((i + 1) / entries.length);
+        }
+        return files;
+      }
+
+      const F16_TABLE = (() => {
+        const t = new Float32Array(65536);
+        for (let h = 0; h < 65536; h++) {
+          const s = (h & 0x8000) ? -1 : 1, e = (h >> 10) & 0x1f, f = h & 0x3ff;
+          t[h] = e === 0 ? s * f * Math.pow(2, -24) : e === 31 ? (f ? NaN : s * Infinity) : s * (1 + f / 1024) * Math.pow(2, e - 15);
+        }
+        return t;
+      })();
+
+      function parseNpy(bytes) {
+        const magic = String.fromCharCode(...bytes.subarray(1, 6));
+        if (bytes[0] !== 0x93 || magic !== "NUMPY") throw new Error("Файл весов повреждён (.npy)");
+        const dv = new DataView(bytes.buffer, bytes.byteOffset, bytes.byteLength);
+        const major = bytes[6];
+        const hlen = major === 1 ? dv.getUint16(8, true) : dv.getUint32(8, true);
+        const off = major === 1 ? 10 : 12;
+        let header = "";
+        for (let i = off; i < off + hlen; i++) header += String.fromCharCode(bytes[i]);
+        const descr = /'descr':\s*'([^']+)'/.exec(header)[1];
+        if (/'fortran_order':\s*True/.test(header)) throw new Error("Неподдерживаемый порядок данных в .npy");
+        const shape = /'shape':\s*\(([^)]*)\)/.exec(header)[1].split(",").map(s => s.trim()).filter(Boolean).map(Number);
+        const count = shape.reduce((a, b) => a * b, 1);
+        const body = bytes.slice(off + hlen);                         // копия: выравнивание для типизированных массивов
+        let data;
+        if (descr === "<f2") {
+          const u16 = new Uint16Array(body.buffer, 0, count);
+          data = new Float32Array(count);
+          for (let i = 0; i < count; i++) data[i] = F16_TABLE[u16[i]];
+        } else if (descr === "<f4") {
+          data = new Float32Array(body.buffer, 0, count);
+        } else if (descr === "|u1") {
+          data = new Uint8Array(body.buffer, 0, count);
+        } else if (descr === "<i8") {
+          const i64 = new BigInt64Array(body.buffer, 0, count);
+          data = Array.from(i64, Number);
+        } else if (/^<U\d+$/.test(descr)) {
+          const u32 = new Uint32Array(body.buffer, 0, Number(descr.slice(2)) * Math.max(1, count));
+          data = String.fromCodePoint(...Array.from(u32).filter(c => c !== 0));
+        } else {
+          throw new Error("Неподдерживаемый тип данных в весах: " + descr);
+        }
+        return { shape, data };
+      }
+
+      const TRIT_LUT = (() => {
+        const t = new Int8Array(256 * 5);
+        for (let v = 0; v < 243; v++) {
+          let x = v;
+          for (let k = 0; k < 5; k++) { t[v * 5 + k] = (x % 3) - 1; x = Math.floor(x / 3); }
+        }
+        return t;
+      })();
+
+      function unpackTrits(packed, n) {                                // 5 тритов в байте, как pack_ternary_matrix()
+        const out = new Int8Array(n);
+        for (let i = 0, j = 0; j < n; i++) {
+          const b = packed[i] * 5;
+          for (let k = 0; k < 5 && j < n; k++) out[j++] = TRIT_LUT[b + k];
+        }
+        return out;
+      }
+
+      // ------------------------------------------------------------------ токенизатор SentencePiece Unigram
+      function readVarint(buf, pos) {
+        let result = 0, shift = 0, b;
+        do {
+          b = buf[pos.i++];
+          result += (b & 0x7f) * Math.pow(2, shift);
+          shift += 7;
+        } while (b & 0x80);
+        return result;
+      }
+
+      function parseProto(buf, onField) {                              // минимальный разбор protobuf
+        const pos = { i: 0 };
+        const dv = new DataView(buf.buffer, buf.byteOffset, buf.byteLength);
+        while (pos.i < buf.length) {
+          const key = readVarint(buf, pos);
+          const field = Math.floor(key / 8), wire = key & 7;
+          if (wire === 0) onField(field, wire, readVarint(buf, pos));
+          else if (wire === 1) { onField(field, wire, dv.getFloat64(pos.i, true)); pos.i += 8; }
+          else if (wire === 2) {
+            const len = readVarint(buf, pos);
+            onField(field, wire, buf.subarray(pos.i, pos.i + len));
+            pos.i += len;
+          } else if (wire === 5) { onField(field, wire, dv.getFloat32(pos.i, true)); pos.i += 4; }
+          else throw new Error("Повреждённый токенизатор (protobuf)");
+        }
+      }
+
+      const PIECE = { NORMAL: 1, UNKNOWN: 2, CONTROL: 3, USER_DEFINED: 4, UNUSED: 5, BYTE: 6 };
+      const SPACE = "\u2581";
+
+      class Tokenizer {
+        constructor(protoBytes) {
+          const utf8 = new TextDecoder();
+          this.pieces = [];
+          this.scores = [];
+          this.types = [];
+          this.addDummyPrefix = true;
+          this.removeExtraWhitespaces = true;
+          parseProto(protoBytes, (field, wire, value) => {
+            if (field === 1 && wire === 2) {
+              let piece = "", score = 0, type = PIECE.NORMAL;
+              parseProto(value, (f, w, v) => {
+                if (f === 1) piece = utf8.decode(v);
+                else if (f === 2) score = v;
+                else if (f === 3) type = v;
+              });
+              this.pieces.push(piece); this.scores.push(score); this.types.push(type);
+            } else if (field === 3 && wire === 2) {
+              parseProto(value, (f, w, v) => {
+                if (f === 3) this.addDummyPrefix = !!v;
+                else if (f === 4) this.removeExtraWhitespaces = !!v;
+              });
+            }
+          });
+          this.vocabSize = this.pieces.length;
+          this.pieceToId = new Map();
+          this.byteToId = new Int32Array(256).fill(-1);
+          this.maxPieceLen = 1;
+          let minScore = Infinity, maxScore = -Infinity;
+          for (let id = 0; id < this.vocabSize; id++) {
+            const type = this.types[id], piece = this.pieces[id];
+            if (type === PIECE.NORMAL || type === PIECE.USER_DEFINED || type === PIECE.UNUSED) {
+              this.pieceToId.set(piece, id);
+              this.maxPieceLen = Math.max(this.maxPieceLen, Array.from(piece).length);
+            }
+            if (type === PIECE.NORMAL) { minScore = Math.min(minScore, this.scores[id]); maxScore = Math.max(maxScore, this.scores[id]); }
+            if (type === PIECE.BYTE) {
+              const m = /^<0x([0-9A-Fa-f]{2})>$/.exec(piece);
+              if (m) this.byteToId[parseInt(m[1], 16)] = id;
+            }
+            if (type === PIECE.UNKNOWN) this.unkId = id;
+          }
+          this.unkScore = minScore - 10.0;                               // kUnkPenalty из sentencepiece
+          this.userDefinedScore = maxScore;
+          this.nlId = this.pieceToId.has("<n>") ? this.pieceToId.get("<n>") : -1;
+          this.bosId = this.pieces.indexOf("<s>");
+          this.eosId = this.pieces.indexOf("</s>");
+        }
+
+        normalize(text) {                                              // ≈ nmt_nfkc из SentencePiece
+          let s = text.normalize("NFKC")
+            .replace(/[\u0000-\u0008\u000E-\u001F\u007F\u008F\u009F]/g, "")
+            .replace(/[\t\n\u000B\f\r\u1680\u200B-\u200F\u2028\u2029\u2581\uFEFF\uFFFD]/g, " ");
+          if (this.removeExtraWhitespaces) s = s.replace(/ +/g, " ").trim();
+          if (!s) return "";
+          if (this.addDummyPrefix) s = " " + s;
+          return s.replace(/ /g, SPACE);
+        }
+
+        encodeLine(line) {                                             // Витерби: максимум суммы оценок кусков
+          const norm = this.normalize(line);
+          if (!norm) return [];
+          const chars = Array.from(norm);
+          const n = chars.length;
+          const best = new Float64Array(n + 1).fill(-Infinity);
+          const backLen = new Int32Array(n + 1);
+          const backId = new Int32Array(n + 1);
+          best[0] = 0;
+          for (let i = 0; i < n; i++) {
+            if (best[i] === -Infinity) continue;
+            let piece = "", hasSingle = false;
+            for (let len = 1; len <= this.maxPieceLen && i + len <= n; len++) {
+              piece += chars[i + len - 1];
+              const id = this.pieceToId.get(piece);
+              if (id === undefined) continue;
+              const type = this.types[id];
+              const score = type === PIECE.USER_DEFINED ? len * this.userDefinedScore - 0.1 : this.scores[id];
+              if (len === 1) hasSingle = true;
+              const cand = best[i] + score;
+              if (cand > best[i + len]) { best[i + len] = cand; backLen[i + len] = len; backId[i + len] = id; }
+            }
+            if (!hasSingle) {
+              const cand = best[i] + this.unkScore;
+              if (cand > best[i + 1]) { best[i + 1] = cand; backLen[i + 1] = 1; backId[i + 1] = -1; }
+            }
+          }
+          const rev = [];
+          for (let j = n; j > 0; j -= backLen[j]) rev.push([backId[j], j - backLen[j], j]);
+          const ids = [];
+          for (let r = rev.length - 1; r >= 0; r--) {
+            const [id, a, b] = rev[r];
+            if (id >= 0) { ids.push(id); continue; }
+            const bytes = new TextEncoder().encode(chars.slice(a, b).join(""));   // byte fallback
+            for (const by of bytes) ids.push(this.byteToId[by] >= 0 ? this.byteToId[by] : this.unkId);
+          }
+          return ids;
+        }
+
+        encode(text) {                                                 // как Tokenizer.encode в train_lm.py
+          const lines = String(text).split("\n");
+          const ids = [];
+          lines.forEach((line, i) => {
+            ids.push(...this.encodeLine(line));
+            if (i < lines.length - 1) ids.push(this.nlId);
+          });
+          return ids;
+        }
+
+        decodeLine(ids) {
+          let out = "", bytes = [];
+          const flush = () => {
+            if (bytes.length) { out += new TextDecoder().decode(new Uint8Array(bytes)); bytes = []; }
+          };
+          for (const id of ids) {
+            const type = this.types[id];
+            if (type === PIECE.BYTE) { bytes.push(parseInt(this.pieces[id].slice(3, 5), 16)); continue; }
+            flush();
+            if (type === PIECE.CONTROL) continue;
+            if (type === PIECE.UNKNOWN) { out += " \u2047 "; continue; }
+            out += this.pieces[id];
+          }
+          flush();
+          out = out.replace(/\u2581/g, " ");
+          return this.addDummyPrefix && out.startsWith(" ") ? out.slice(1) : out;
+        }
+
+        decode(ids) {
+          const parts = [];
+          let cur = [];
+          for (const id of ids) {
+            if (id === this.nlId) { parts.push(this.decodeLine(cur), "\n"); cur = []; }
+            else if (id === this.eosId) break;
+            else cur.push(id);
+          }
+          parts.push(this.decodeLine(cur));
+          return parts.join("");
+        }
+
+        pieceText(id) {                                                // для «Рентгена»: кусок слова как есть
+          if (id === this.nlId) return "⏎";
+          const type = this.types[id];
+          if (type === PIECE.BYTE) return this.pieces[id];
+          return this.pieces[id].replace(/\u2581/g, " ");
+        }
+      }
+
+      // ------------------------------------------------------------------ слои
+      function rmsNorm(x, w, out, eps) {
+        const n = x.length;
+        let ss = 0;
+        for (let i = 0; i < n; i++) ss += x[i] * x[i];
+        const r = 1 / Math.sqrt(ss / n + eps);
+        for (let i = 0; i < n; i++) out[i] = x[i] * r * w[i];
+      }
+
+      function roundHalfEven(v) {                                       // как torch.round
+        const r = Math.round(v);
+        return (r - v === 0.5 && (r & 1) !== 0) ? r - 1 : r;
+      }
+
+      const silu = v => v / (1 + Math.exp(-v));
+      const softplus = v => (v > 20 ? v : Math.log1p(Math.exp(v)));
+      const sigmoid = v => 1 / (1 + Math.exp(-v));
+
+      class BitLinear {                                                 // BitLinear158: троичные веса * gamma, int8-активации
+        constructor(T, name, withNorm) {
+          const shape = T.get(name + ".weight.shape").data;
+          this.outF = shape[0];
+          this.inF = shape[1];
+          const w = unpackTrits(T.get(name + ".weight.packed").data, this.outF * this.inF);
+          this.gamma = T.get(name + ".weight.gamma").data[0];
+          this.normW = withNorm ? T.get(name + ".norm.weight").data : null;
+          this.normBuf = new Float32Array(this.inF);
+          this.q = new Int32Array(this.inF);
+          // Умножений нет: для каждой строки храним, где стоят +1 и где -1, и только складываем/вычитаем
+          let nPlus = 0, nMinus = 0;
+          for (let i = 0; i < w.length; i++) { if (w[i] === 1) nPlus++; else if (w[i] === -1) nMinus++; }
+          this.plus = new Uint16Array(nPlus);
+          this.minus = new Uint16Array(nMinus);
+          this.plusOff = new Int32Array(this.outF + 1);
+          this.minusOff = new Int32Array(this.outF + 1);
+          for (let o = 0, a = 0, b = 0; o < this.outF; o++) {
+            this.plusOff[o] = a; this.minusOff[o] = b;
+            for (let i = 0, base = o * this.inF; i < this.inF; i++) {
+              const t = w[base + i];
+              if (t === 1) this.plus[a++] = i; else if (t === -1) this.minus[b++] = i;
+            }
+            this.plusOff[o + 1] = a; this.minusOff[o + 1] = b;
+          }
+          this.nonzero = nPlus + nMinus;
+        }
+
+        forward(x, out) {
+          let src = x;
+          if (this.normW) { rmsNorm(x, this.normW, this.normBuf, 1e-6); src = this.normBuf; }
+          const n = this.inF, q = this.q;
+          let amax = 0;
+          for (let i = 0; i < n; i++) { const a = Math.abs(src[i]); if (a > amax) amax = a; }
+          const scale = Math.fround(127 / Math.max(amax, 1e-5));
+          for (let i = 0; i < n; i++) {
+            const v = roundHalfEven(Math.fround(src[i] * scale));
+            q[i] = v > 127 ? 127 : v < -128 ? -128 : v;
+          }
+          const k = this.gamma / scale, P = this.plus, M = this.minus, pOff = this.plusOff, mOff = this.minusOff;
+          for (let o = 0; o < this.outF; o++) {
+            let s = 0;                                                  // точная целочисленная сумма
+            for (let j = pOff[o], e = pOff[o + 1]; j < e; j++) s = (s + q[P[j]]) | 0;
+            for (let j = mOff[o], e = mOff[o + 1]; j < e; j++) s = (s - q[M[j]]) | 0;
+            out[o] = s * k;
+          }
+        }
+      }
+
+      class Mamba2Layer {
+        constructor(T, p, cfg) {
+          this.D = cfg.d_model;
+          this.dInner = cfg.expand * cfg.d_model;
+          this.dState = cfg.d_state;
+          this.headdim = cfg.ssm_headdim;
+          this.nheads = this.dInner / this.headdim;
+          this.convDim = this.dInner + 2 * this.dState;
+          this.K = cfg.d_conv;
+          this.eps = cfg.rms_norm_eps;
+          this.norm = T.get(p + ".norm.weight").data;
+          this.inProj = new BitLinear(T, p + ".in_proj", false);
+          this.dtW = T.get(p + ".dt_proj.weight").data;
+          this.dtB = T.get(p + ".dt_proj.bias").data;
+          this.convW = T.get(p + ".conv1d.weight").data;             // (C, 1, K)
+          this.convB = T.get(p + ".conv1d.bias").data;
+          this.A = Float32Array.from(T.get(p + ".A_log").data, v => -Math.exp(v));
+          this.Dskip = T.get(p + ".D").data;
+          this.outNorm = T.get(p + ".out_norm.weight").data;
+          this.outProj = new BitLinear(T, p + ".out_proj", false);
+          this.h = new Float32Array(this.D);
+          this.zxbc = new Float32Array(this.dInner + this.convDim);
+          this.u = new Float32Array(this.convDim);
+          this.dt = new Float32Array(this.nheads);
+          this.y = new Float32Array(this.dInner);
+          this.yn = new Float32Array(this.dInner);
+          this.o = new Float32Array(this.D);
+        }
+
+        newCache() {
+          return { conv: new Float32Array(this.convDim * (this.K - 1)), ssm: new Float32Array(this.nheads * this.headdim * this.dState) };
+        }
+
+        step(x, cache) {                                               // x меняется на месте: x += out_proj(...)
+          const D = this.D, dI = this.dInner, N = this.dState, P = this.headdim, K = this.K, Km1 = K - 1;
+          rmsNorm(x, this.norm, this.h, this.eps);
+          const h = this.h;
+          this.inProj.forward(h, this.zxbc);
+          const zxbc = this.zxbc, u = this.u, conv = cache.conv;
+          for (let hd = 0; hd < this.nheads; hd++) {
+            let s = this.dtB[hd];
+            const base = hd * D;
+            for (let i = 0; i < D; i++) s += this.dtW[base + i] * h[i];
+            this.dt[hd] = softplus(s);
+          }
+          for (let c = 0; c < this.convDim; c++) {                     // каузальная свёртка по 4 последним шагам
+            const xv = zxbc[dI + c], cb = c * Km1, wb = c * K;
+            let s = this.convB[c] + this.convW[wb + Km1] * xv;
+            for (let k = 0; k < Km1; k++) s += this.convW[wb + k] * conv[cb + k];
+            for (let k = 0; k < Km1 - 1; k++) conv[cb + k] = conv[cb + k + 1];
+            conv[cb + Km1 - 1] = xv;
+            u[c] = silu(s);
+          }
+          const ssm = cache.ssm, y = this.y, Boff = dI, Coff = dI + N;
+          for (let hd = 0; hd < this.nheads; hd++) {
+            const dt = this.dt[hd], dA = Math.exp(dt * this.A[hd]), Dh = this.Dskip[hd];
+            for (let p = 0; p < P; p++) {
+              const ch = hd * P + p, X = u[ch], xdt = X * dt, sb = ch * N;
+              let acc = 0;
+              for (let n = 0; n < N; n++) {
+                const s = ssm[sb + n] * dA + xdt * u[Boff + n];
+                ssm[sb + n] = s;
+                acc += s * u[Coff + n];
+              }
+              y[ch] = (acc + X * Dh) * silu(zxbc[ch]);
+            }
+          }
+          rmsNorm(y, this.outNorm, this.yn, this.eps);
+          this.outProj.forward(this.yn, this.o);
+          for (let i = 0; i < D; i++) x[i] += this.o[i];
+        }
+      }
+
+      class AttentionLayer {                                            // локальное внимание (окно W) + RoPE + GQA, затем MLP
+        constructor(T, p, cfg) {
+          this.D = cfg.d_model;
+          this.nh = cfg.n_heads;
+          this.nkv = cfg.n_kv_heads;
+          this.hd = cfg.d_model / cfg.n_heads;
+          this.W = cfg.window_size;
+          this.eps = cfg.rms_norm_eps;
+          this.norm = T.get(p + ".norm.weight").data;
+          this.qkv = new BitLinear(T, p + ".qkv", false);
+          this.oProj = new BitLinear(T, p + ".o_proj", true);
+          this.hasMlp = cfg.mlp_ratio > 0;
+          if (this.hasMlp) {
+            this.mlpNorm = T.get(p + ".mlp.norm.weight").data;
+            this.up = new BitLinear(T, p + ".mlp.up", false);
+            this.down = new BitLinear(T, p + ".mlp.down", true);
+            this.upOut = new Float32Array(this.up.outF);
+          }
+          const half = this.hd / 2;
+          this.invFreq = new Float32Array(half);
+          for (let i = 0; i < half; i++) this.invFreq[i] = Math.fround(1 / Math.pow(cfg.rope_theta, (2 * i) / this.hd));
+          this.cos = new Float32Array(half);
+          this.sin = new Float32Array(half);
+          this.h = new Float32Array(this.D);
+          this.qkvOut = new Float32Array((this.nh + 2 * this.nkv) * this.hd);
+          this.att = new Float32Array(this.nh * this.hd);
+          this.scores = new Float64Array(this.W);
+          this.o = new Float32Array(this.D);
+        }
+
+        newCache() {
+          const n = this.W * this.nkv * this.hd;
+          return { k: new Float32Array(n), v: new Float32Array(n), pos: 0 };
+        }
+
+        rope(vec, off) {
+          const half = this.hd / 2;
+          for (let i = 0; i < half; i++) {
+            const a = vec[off + i], b = vec[off + i + half];
+            vec[off + i] = a * this.cos[i] - b * this.sin[i];
+            vec[off + i + half] = b * this.cos[i] + a * this.sin[i];
+          }
+        }
+
+        step(x, cache) {
+          const D = this.D, hd = this.hd, nh = this.nh, nkv = this.nkv, W = this.W;
+          rmsNorm(x, this.norm, this.h, this.eps);
+          this.qkv.forward(this.h, this.qkvOut);
+          const qkv = this.qkvOut, pos = cache.pos;
+          for (let i = 0; i < hd / 2; i++) {
+            const ang = Math.fround(pos * this.invFreq[i]);
+            this.cos[i] = Math.cos(ang);
+            this.sin[i] = Math.sin(ang);
+          }
+          for (let h = 0; h < nh; h++) this.rope(qkv, h * hd);
+          const kOff = nh * hd, vOff = kOff + nkv * hd;
+          for (let g = 0; g < nkv; g++) this.rope(qkv, kOff + g * hd);
+          const slot = pos % W;
+          for (let g = 0; g < nkv; g++) {
+            for (let i = 0; i < hd; i++) {
+              cache.k[(slot * nkv + g) * hd + i] = qkv[kOff + g * hd + i];
+              cache.v[(slot * nkv + g) * hd + i] = qkv[vOff + g * hd + i];
+            }
+          }
+          cache.pos = pos + 1;
+          const L = Math.min(pos + 1, W), rep = nh / nkv, sc = 1 / Math.sqrt(hd), scores = this.scores;
+          for (let h = 0; h < nh; h++) {
+            const g = Math.floor(h / rep), qo = h * hd;
+            let mx = -Infinity;
+            for (let j = 0; j < L; j++) {
+              const ko = (j * nkv + g) * hd;
+              let s = 0;
+              for (let i = 0; i < hd; i++) s += qkv[qo + i] * cache.k[ko + i];
+              s *= sc;
+              scores[j] = s;
+              if (s > mx) mx = s;
+            }
+            let sum = 0;
+            for (let j = 0; j < L; j++) { scores[j] = Math.exp(scores[j] - mx); sum += scores[j]; }
+            for (let i = 0; i < hd; i++) this.att[qo + i] = 0;
+            for (let j = 0; j < L; j++) {
+              const pj = scores[j] / sum, vo = (j * nkv + g) * hd;
+              for (let i = 0; i < hd; i++) this.att[qo + i] += pj * cache.v[vo + i];
+            }
+          }
+          this.oProj.forward(this.att, this.o);
+          for (let i = 0; i < D; i++) x[i] += this.o[i];
+          if (this.hasMlp) {
+            rmsNorm(x, this.mlpNorm, this.h, this.eps);
+            this.up.forward(this.h, this.upOut);
+            const u = this.upOut;
+            for (let i = 0; i < u.length; i++) { const r = u[i] > 0 ? u[i] : 0; u[i] = r * r; }
+            this.down.forward(u, this.o);
+            for (let i = 0; i < D; i++) x[i] += this.o[i];
+          }
+        }
+      }
+
+      class ProductKeyMemory {
+        constructor(T, p, cfg) {
+          this.D = cfg.d_model;
+          this.nKeys = cfg.memory_keys;
+          this.topK = cfg.memory_top_k;
+          this.half = cfg.memory_key_dim / 2;
+          this.query = new BitLinear(T, p + ".query", true);
+          this.keys = T.get(p + ".keys").data;                         // (2, n_keys, half)
+          this.values = T.get(p + ".values.weight").data;              // (n_keys^2, d_model)
+          this.gate = Math.tanh(T.get(p + ".gate").data[0]);
+          this.q = new Float32Array(cfg.memory_key_dim);
+        }
+
+        topk(scores, k) {
+          const idx = [];
+          for (let i = 0; i < scores.length; i++) {
+            let pos = idx.length;
+            while (pos > 0 && scores[idx[pos - 1]] < scores[i]) pos--;
+            if (pos < k) { idx.splice(pos, 0, i); if (idx.length > k) idx.pop(); }
+          }
+          return idx;
+        }
+
+        apply(x, out) {                                                // out = x + tanh(gate) * sum_k w_k * values[idx_k]
+          this.query.forward(x, this.q);
+          const half = this.half, nK = this.nKeys, q = this.q, keys = this.keys;
+          const s1 = new Float64Array(nK), s2 = new Float64Array(nK);
+          for (let j = 0; j < nK; j++) {
+            let a = 0, b = 0;
+            const o1 = j * half, o2 = (nK + j) * half;
+            for (let i = 0; i < half; i++) { a += q[i] * keys[o1 + i]; b += q[half + i] * keys[o2 + i]; }
+            s1[j] = a; s2[j] = b;
+          }
+          const i1 = this.topk(s1, this.topK), i2 = this.topk(s2, this.topK);
+          const cand = [], candIdx = [];
+          for (const a of i1) for (const b of i2) { cand.push(s1[a] + s2[b]); candIdx.push(a * nK + b); }
+          const best = this.topk(cand, this.topK);
+          let mx = -Infinity;
+          for (const c of best) mx = Math.max(mx, cand[c]);
+          let sum = 0;
+          const w = best.map(c => { const e = Math.exp(cand[c] - mx); sum += e; return e; });
+          for (let i = 0; i < this.D; i++) out[i] = x[i];
+          best.forEach((c, r) => {
+            const coef = this.gate * w[r] / sum, vo = candIdx[c] * this.D;
+            for (let i = 0; i < this.D; i++) out[i] += coef * this.values[vo + i];
+          });
+        }
+      }
+
+      function layerKinds(n, every) {
+        return Array.from({ length: n }, (_, i) => (every > 0 && (i + 1) % every === 0 ? "attn" : "ssm"));
+      }
+
+      class MiniModel {
+        constructor(cfg, T) {
+          this.cfg = cfg;
+          this.D = cfg.d_model;
+          this.V = cfg.vocab_size;
+          this.emb = T.get("tok_embeddings.weight").data;
+          const build = (kind, p) => (kind === "attn" ? new AttentionLayer(T, p, cfg) : new Mamba2Layer(T, p, cfg));
+          this.encoder = layerKinds(cfg.n_encoder_layers, cfg.encoder_attn_every).map((k, i) => build(k, "encoder." + i));
+          this.decoder = layerKinds(cfg.n_decoder_layers, cfg.decoder_attn_every).map((k, i) => build(k, "decoder." + i));
+          this.coreLayers = Array.from({ length: cfg.n_reasoning_layers }, (_, i) => new Mamba2Layer(T, "core.layers." + i, cfg));
+          this.memory = new ProductKeyMemory(T, "core.memory", cfg);
+          this.routerW = T.get("core.router.weight").data;
+          this.routerB = T.get("core.router.bias").data[0];
+          this.stepEmb = T.get("core.step_emb").data;
+          this.finalNorm = T.get("final_norm.weight").data;
+          this.x = new Float32Array(this.D);
+          this.z = new Float32Array(this.D);
+          this.zin = new Float32Array(this.D);
+          this.hc = new Float32Array(this.D);
+          this.hn = new Float32Array(this.D);
+          const all = [...this.encoder, ...this.coreLayers, ...this.decoder];
+          this.ternaryParams = 0;
+          const countLin = l => { this.ternaryParams += l.outF * l.inF; };
+          for (const l of all) {
+            if (l instanceof Mamba2Layer) { countLin(l.inProj); countLin(l.outProj); }
+            else { countLin(l.qkv); countLin(l.oProj); if (l.hasMlp) { countLin(l.up); countLin(l.down); } }
+          }
+          countLin(this.memory.query);
+        }
+
+        newState() {
+          return {
+            enc: this.encoder.map(l => l.newCache()),
+            core: Array.from({ length: this.cfg.max_latent_steps }, () => this.coreLayers.map(l => l.newCache())),
+            dec: this.decoder.map(l => l.newCache()),
+            pos: 0
+          };
+        }
+
+        // Один токен -> логиты следующего (logitsOut, Float32Array V). Возвращает число шагов «мышления» ядра.
+        step(token, st, logitsOut) {
+          const D = this.D, x = this.x;
+          const eo = token * D;
+          for (let i = 0; i < D; i++) x[i] = this.emb[eo + i];
+          this.encoder.forEach((l, i) => l.step(x, st.enc[i]));
+          // ядро мышления: роутер решает, сколько раз (0..max_latent_steps) прогнать токен через ядро
+          const z = this.z, zin = this.zin, hc = this.hc;
+          z.set(x);
+          let depth = 0;
+          for (let k = 0; k < this.cfg.max_latent_steps; k++) {
+            let logit = this.routerB;
+            for (let i = 0; i < D; i++) {
+              zin[i] = z[i] + this.stepEmb[k * D + i];
+              logit += this.routerW[i] * zin[i];
+            }
+            if (!(logit > 0)) break;
+            this.memory.apply(zin, hc);
+            this.coreLayers.forEach((l, i) => l.step(hc, st.core[k][i]));
+            const g = sigmoid(logit);
+            for (let i = 0; i < D; i++) z[i] += g * (hc[i] - z[i]);
+            depth++;
+          }
+          x.set(z);
+          this.decoder.forEach((l, i) => l.step(x, st.dec[i]));
+          rmsNorm(x, this.finalNorm, this.hn, this.cfg.rms_norm_eps);
+          const hn = this.hn, E = this.emb, V = this.V;                // выход связан с эмбеддингом (weight tying)
+          let v = 0;
+          for (; v + 3 < V; v += 4) {                                   // по 4 строки за проход: в 1.5 раза быстрее
+            const b0 = v * D, b1 = b0 + D, b2 = b1 + D, b3 = b2 + D;
+            let s0 = 0, s1 = 0, s2 = 0, s3 = 0;
+            for (let i = 0; i < D; i++) {
+              const h = hn[i];
+              s0 += E[b0 + i] * h; s1 += E[b1 + i] * h; s2 += E[b2 + i] * h; s3 += E[b3 + i] * h;
+            }
+            logitsOut[v] = s0; logitsOut[v + 1] = s1; logitsOut[v + 2] = s2; logitsOut[v + 3] = s3;
+          }
+          for (; v < V; v++) {
+            let s = 0;
+            for (let i = 0, b = v * D; i < D; i++) s += E[b + i] * hn[i];
+            logitsOut[v] = s;
+          }
+          st.pos++;
+          return depth;
+        }
+      }
+
+      async function load(buffer, onProgress = () => {}) {
+        const yieldNow = () => new Promise(r => setTimeout(r, 0));
+        const files = await readZip(buffer, f => onProgress(0.7 * f, "Распаковка весов"));
+        const T = new Map();
+        let n = 0, last = performance.now();
+        for (const [name, bytes] of files) {
+          T.set(name, parseNpy(bytes));
+          if (++n % 20 === 0 && performance.now() - last > 30) { onProgress(0.7 + 0.2 * n / files.size, "Чтение весов"); await yieldNow(); last = performance.now(); }
+        }
+        if (!T.has("config") || !T.has("tokenizer_proto")) throw new Error("В файле нет настроек модели или токенизатора — это не веса train_lm.py");
+        const cfg = JSON.parse(T.get("config").data);
+        onProgress(0.92, "Сборка сети");
+        await yieldNow();
+        const tokenizer = new Tokenizer(T.get("tokenizer_proto").data);
+        const model = new MiniModel(cfg, T);
+        const meta = {
+          step: T.has("meta.step") ? Number(T.get("meta.step").data[0]) : null,
+          bestVal: T.has("meta.best_val") ? Number(T.get("meta.best_val").data[0]) : null,
+          params: 0
+        };
+        for (const [name, t] of T) {
+          if (name.endsWith(".weight.shape")) meta.params += t.data.reduce((a, b) => a * b, 1);
+          else if (!name.includes(".weight.") && !name.startsWith("meta.") && name !== "config" && name !== "tokenizer_proto") meta.params += t.data.length;
+        }
+        onProgress(1, "Готово");
+        return { model, tokenizer, cfg, meta };
+      }
+
+      // ------------------------------------------------------------------ выбор следующего токена
+      function mulberry32(seed) {
+        let a = seed >>> 0;
+        return () => {
+          a = (a + 0x6D2B79F5) >>> 0;
+          let t = a;
+          t = Math.imul(t ^ (t >>> 15), t | 1);
+          t ^= t + Math.imul(t ^ (t >>> 7), t | 61);
+          return ((t ^ (t >>> 14)) >>> 0) / 4294967296;
+        };
+      }
+
+      // Как generate() в slr_net_engine.py: штраф за повтор -> температура -> top-k -> top-p -> случайный выбор
+      function sampleToken(logits, { context = [], banned = [], temperature = 0.8, topK = 50, topP = 0.95, repetitionPenalty = 1.1, rng = Math.random } = {}) {
+        const V = logits.length;
+        const l = Float64Array.from(logits);
+        if (repetitionPenalty !== 1) {
+          for (const id of new Set(context)) l[id] = l[id] > 0 ? l[id] / repetitionPenalty : l[id] * repetitionPenalty;
+        }
+        for (const id of banned) if (id >= 0) l[id] = -Infinity;
+        if (temperature <= 0) {
+          let bi = 0;
+          for (let i = 1; i < V; i++) if (l[i] > l[bi]) bi = i;
+          return bi;
+        }
+        const K = Math.min(topK > 0 ? topK : V, V);
+        const top = [];                                                 // индексы K лучших по убыванию
+        for (let i = 0; i < V; i++) {
+          const v = l[i];
+          if (v === -Infinity) continue;
+          if (top.length === K && v <= l[top[K - 1]]) continue;
+          let pos = top.length;
+          while (pos > 0 && l[top[pos - 1]] < v) pos--;
+          top.splice(pos, 0, i);
+          if (top.length > K) top.pop();
+        }
+        const mx = l[top[0]] / temperature;
+        const probs = top.map(i => Math.exp(l[i] / temperature - mx));
+        const total = probs.reduce((a, b) => a + b, 0);
+        let cum = 0, keep = 0;
+        for (let r = 0; r < probs.length; r++) {
+          const p = probs[r] / total;
+          if (r > 0 && cum > topP) break;                               // как в generate(): cum - p > top_p -> убрать
+          cum += p;
+          keep = r + 1;
+        }
+        let mass = 0;
+        for (let r = 0; r < keep; r++) mass += probs[r];
+        let u = rng() * mass;
+        for (let r = 0; r < keep; r++) { u -= probs[r]; if (u <= 0) return top[r]; }
+        return top[keep - 1];
+      }
+
+      return { load, sampleToken, mulberry32, Tokenizer, readZip, parseNpy };
+    })();
+  </script>
   <script>
     const STARTER_CORPUS = [
       "привет ! как ты тут оказался ? Привет ! Шёл мимо , увидел свет в окне и решил заглянуть на пару минут . Рад , что застал тебя дома .",
@@ -1851,7 +2797,8 @@
       cancelRequested: false,
       lastTrainStopped: false,
       lastCorpusStats: null,
-      pendingUnknownQuestion: null
+      pendingUnknownQuestion: null,
+      modelMode: "regular"            // "regular" — поисковый прототип, "mini" — обученная LLM
     };
 
     function showToast(msg) {
@@ -2258,7 +3205,7 @@
       const packedKb = ((totalTernaryParams / 5.0 + eng.V * eng.D * 2) / 1024.0).toFixed(1);
 
       const headerStats = document.getElementById("headerStatsText");
-      if (headerStats) {
+      if (headerStats && appState.modelMode !== "mini") {
         headerStats.textContent = `Веса {-1,0,+1} • Нулей: ${spPercent}% • Ядро: ${packedKb} КБ`;
       }
 
@@ -2361,7 +3308,13 @@
       container.scrollTop = container.scrollHeight;
     }
 
+    // Кто отвечает: обычная модель (поиск по памяти + логика) или mini (генеративная LLM)
     function handleUserPrompt(promptText) {
+      if (appState.modelMode === "mini") return miniHandlePrompt(promptText);
+      return handleRegularPrompt(promptText);
+    }
+
+    function handleRegularPrompt(promptText) {
       const clean = promptText.trim();
       if (!clean) return;
       if (!appState.engine) {
@@ -2401,6 +3354,490 @@
         appState.pendingUnknownQuestion = null;
       }
       appendChatMessage("assistant", res.replyText || "Не удалось построить ответ — добавьте этот вопрос во вкладке «Дообучение».", res);
+    }
+
+    // =============================================================================================
+    //  Режим «mini»: обученная LLM из slr_net_subtitles_ru_mini.npz (движок SLRMini выше).
+    //  Веса скачиваются один раз (GitHub или файл с телефона) и хранятся в IndexedDB браузера.
+    //  Генерация идёт по токену с паузами для браузера — страница не зависает, ответ печатается.
+    // =============================================================================================
+    const MINI_FILE_NAME = "slr_net_subtitles_ru_mini.npz";
+    const MINI_WEIGHTS_URLS = [
+      MINI_FILE_NAME,                                                   // рядом со страницей (сервер, GitHub Pages)
+      "https://raw.githubusercontent.com/RamadanIU/Singularity/main/" + MINI_FILE_NAME
+    ];
+    const MINI_LIMITS = {
+      context: 256,          // столько токенов модель видела при обучении; длиннее — оставляем последние реплики
+      keepOnTrim: 96,
+      maxNewTokens: 64
+    };
+    const miniState = {
+      bundle: null,          // { model, tokenizer, cfg, meta }
+      loading: false,
+      ctx: null,
+      ctxIds: [],
+      logits: null,
+      busy: false,
+      cancelRequested: false,
+      replyLines: 2,
+      temperature: 0.8,
+      rng: Math.random,
+      lastSpeed: 0,
+      source: ""
+    };
+
+    // --- хранение весов в браузере (IndexedDB), чтобы не скачивать их при каждом открытии
+    function miniIdb(mode, fn) {
+      return new Promise((resolve, reject) => {
+        let req;
+        try {
+          req = indexedDB.open("slr_net_mini", 1);
+        } catch (e) {
+          reject(e);
+          return;
+        }
+        req.onupgradeneeded = () => req.result.createObjectStore("files");
+        req.onerror = () => reject(req.error);
+        req.onsuccess = () => {
+          const db = req.result;
+          let r = null;
+          try {
+            const tx = db.transaction("files", mode);
+            r = fn(tx.objectStore("files"));
+            tx.oncomplete = () => { db.close(); resolve(r ? r.result : undefined); };
+            tx.onerror = tx.onabort = () => { db.close(); reject(tx.error); };
+          } catch (e) {
+            db.close();
+            reject(e);
+          }
+        };
+      });
+    }
+    const miniCacheGet = () => miniIdb("readonly", s => s.get("weights"));
+    const miniCachePut = buf => miniIdb("readwrite", s => s.put(buf, "weights"));
+    const miniCacheDelete = () => miniIdb("readwrite", s => s.delete("weights"));
+
+    function miniSetProgress(fraction, text) {
+      const box = document.getElementById("miniLoadProgress");
+      if (box) box.classList.remove("hidden");
+      const fill = document.getElementById("miniLoadFill");
+      if (fill) fill.style.width = `${Math.round(Math.max(0, Math.min(1, fraction)) * 100)}%`;
+      const label = document.getElementById("miniLoadText");
+      if (label) label.textContent = text;
+    }
+
+    function miniShowError(text) {
+      miniSetProgress(0, text);
+      const label = document.getElementById("miniLoadText");
+      if (label) label.className = "text-[11px] text-rose-300 leading-relaxed";
+      showToast("Не удалось загрузить mini");
+    }
+
+    function miniHeaderText() {
+      if (!miniState.bundle) return "mini: обученная LLM • веса ещё не загружены";
+      const p = (miniState.bundle.meta.params / 1e6).toFixed(1);
+      const speed = miniState.lastSpeed ? ` • ${miniState.lastSpeed.toFixed(0)} ток/с` : "";
+      return `mini: ${p} млн параметров • веса {-1,0,+1}${speed}`;
+    }
+
+    function updateMiniUI() {
+      const mini = appState.modelMode === "mini";
+      const loaded = !!miniState.bundle;
+      document.getElementById("miniPanel").classList.toggle("hidden", !mini);
+      document.getElementById("miniLoadBox").classList.toggle("hidden", loaded);
+      document.getElementById("miniReadyBox").classList.toggle("hidden", !loaded);
+      for (const id of ["miniDownloadBtn", "miniPickBtn"]) {
+        const b = document.getElementById(id);
+        if (b) b.disabled = miniState.loading;
+      }
+      const status = document.getElementById("miniStatusText");
+      if (status && loaded) {
+        const m = miniState.bundle.meta;
+        const speed = miniState.lastSpeed ? ` • ${miniState.lastSpeed.toFixed(0)} ток/с` : "";
+        status.textContent = `✅ mini готова • ${(m.params / 1e6).toFixed(1)} млн параметров${m.step ? " • " + m.step.toLocaleString("ru-RU") + " шагов обучения" : ""}${speed}`;
+      }
+      if (mini) {
+        const header = document.getElementById("headerStatsText");
+        if (header) header.textContent = miniHeaderText();
+      }
+    }
+
+    function miniResetContext() {
+      if (!miniState.bundle) {
+        miniState.ctx = null;
+        miniState.ctxIds = [];
+        miniState.logits = null;
+        return;
+      }
+      miniState.ctx = miniState.bundle.model.newState();
+      miniState.ctxIds = [];
+      miniState.logits = new Float32Array(miniState.bundle.cfg.vocab_size);
+    }
+
+    async function miniLoadFromBuffer(buffer, sourceLabel, { cache = true, progressStart = 0.6 } = {}) {
+      const bundle = await SLRMini.load(buffer, (f, phase) => {
+        miniSetProgress(progressStart + (1 - progressStart) * f, `${phase}…`);
+      });
+      miniState.bundle = bundle;
+      miniState.source = sourceLabel;
+      miniResetContext();
+      let cached = false;
+      if (cache) {
+        try {
+          await miniCachePut(buffer);
+          cached = true;
+        } catch (e) {
+          // IndexedDB может быть недоступна (приватный режим, файл открыт локально) — просто не кэшируем
+        }
+      }
+      const label = document.getElementById("miniLoadText");
+      if (label) label.className = "mono text-[11px] text-slate-400";
+      document.getElementById("miniLoadProgress").classList.add("hidden");
+      showToast(`mini загружена (${sourceLabel})${cached ? " и сохранена в браузере" : ""}`);
+      updateMiniUI();
+      return bundle;
+    }
+
+    async function miniFetchWithProgress(url, onProgress) {
+      const resp = await fetch(url);
+      if (!resp.ok) throw new Error(`HTTP ${resp.status}`);
+      const total = Number(resp.headers.get("content-length")) || 9.3e6;
+      if (!resp.body || typeof resp.body.getReader !== "function") return await resp.arrayBuffer();
+      const reader = resp.body.getReader();
+      const chunks = [];
+      let got = 0;
+      for (;;) {
+        const { done, value } = await reader.read();
+        if (done) break;
+        chunks.push(value);
+        got += value.length;
+        onProgress(got, Math.max(total, got));
+      }
+      const out = new Uint8Array(got);
+      let off = 0;
+      for (const c of chunks) { out.set(c, off); off += c.length; }
+      return out.buffer;
+    }
+
+    async function miniDownload() {
+      if (miniState.loading) return;
+      miniState.loading = true;
+      updateMiniUI();
+      let lastErr = null;
+      try {
+        for (const url of MINI_WEIGHTS_URLS) {
+          const local = !/^https?:/.test(url);
+          if (local && !/^https?:$/.test(location.protocol)) continue;   // страница открыта как файл — рядом не скачать
+          try {
+            const where = local ? "рядом со страницей" : "GitHub";
+            miniSetProgress(0, `Скачивание весов (${where})…`);
+            const buf = await miniFetchWithProgress(url, (got, total) =>
+              miniSetProgress(0.6 * got / total, `Скачано ${formatBytes(got)} из ${formatBytes(total)}`));
+            await miniLoadFromBuffer(buf, local ? "с сервера" : "с GitHub");
+            return;
+          } catch (e) {
+            lastErr = e;
+          }
+        }
+        throw lastErr || new Error("нет адреса для скачивания");
+      } catch (e) {
+        miniShowError(`Не удалось скачать веса (${e.message}). Скачайте файл ${MINI_FILE_NAME} из репозитория вручную и выберите его кнопкой «Выбрать файл».`);
+      } finally {
+        miniState.loading = false;
+        updateMiniUI();
+      }
+    }
+
+    async function miniLoadFile(file) {
+      if (!file || miniState.loading) return;
+      miniState.loading = true;
+      updateMiniUI();
+      try {
+        miniSetProgress(0.05, `Чтение ${file.name} (${formatBytes(file.size)})…`);
+        const buf = await readBlobAsArrayBuffer(file);
+        await miniLoadFromBuffer(buf, `файл ${file.name}`, { progressStart: 0.2 });
+      } catch (e) {
+        miniShowError(`Не удалось загрузить ${file.name}: ${e.message}`);
+      } finally {
+        miniState.loading = false;
+        updateMiniUI();
+      }
+    }
+
+    async function miniTryLoadFromCache() {
+      if (miniState.bundle || miniState.loading) return false;
+      let buf = null;
+      try {
+        buf = await miniCacheGet();
+      } catch (e) {
+        return false;
+      }
+      if (!buf || miniState.bundle) return false;
+      miniState.loading = true;
+      updateMiniUI();
+      try {
+        miniSetProgress(0.1, "Загрузка весов из памяти браузера…");
+        await miniLoadFromBuffer(buf, "из памяти браузера", { cache: false, progressStart: 0.1 });
+        return true;
+      } catch (e) {
+        try { await miniCacheDelete(); } catch (_) { /* ничего */ }
+        miniShowError(`Сохранённые веса повреждены (${e.message}) — загрузите их заново.`);
+        return false;
+      } finally {
+        miniState.loading = false;
+        updateMiniUI();
+      }
+    }
+
+    function setModelMode(mode, { save = true } = {}) {
+      appState.modelMode = mode === "mini" ? "mini" : "regular";
+      const mini = appState.modelMode === "mini";
+      const btnRegular = document.getElementById("modeRegularBtn");
+      const btnMini = document.getElementById("modeMiniBtn");
+      btnRegular.classList.toggle("active", !mini);
+      btnMini.classList.toggle("active", mini);
+      btnRegular.setAttribute("aria-selected", String(!mini));
+      btnMini.setAttribute("aria-selected", String(mini));
+      document.getElementById("quickPromptsBar").classList.toggle("hidden", mini);
+      document.getElementById("miniQuickPromptsBar").classList.toggle("hidden", !mini);
+      const input = document.getElementById("chatInputField");
+      if (input) input.placeholder = mini ? "Напишите реплику — mini продолжит диалог…" : "Напишите вопрос на русском...";
+      if (save) {
+        try { localStorage.setItem("slr_net_model_mode", appState.modelMode); } catch (e) { /* песочница */ }
+      }
+      if (mini) miniTryLoadFromCache();
+      else updateStatsUI();
+      updateMiniUI();
+    }
+
+    function miniUpdateSendButton() {
+      const btn = document.getElementById("sendMsgBtn");
+      if (!btn) return;
+      const spans = btn.querySelectorAll("span");
+      if (spans.length >= 2) {
+        spans[0].textContent = miniState.busy ? "Стоп" : "Отпр.";
+        spans[1].textContent = miniState.busy ? "■" : "➤";
+      }
+      btn.title = miniState.busy ? "Остановить ответ mini" : "";
+    }
+
+    async function miniFeed(ids, depthsOut = null) {
+      const model = miniState.bundle.model;
+      let last = performance.now();
+      for (const t of ids) {
+        const d = model.step(t, miniState.ctx, miniState.logits);
+        miniState.ctxIds.push(t);
+        if (depthsOut) depthsOut.push(d);
+        if (performance.now() - last > 30) {
+          await yieldToBrowser();
+          last = performance.now();
+        }
+      }
+    }
+
+    function miniTrimTail(ids, keep, nlId) {
+      let tail = ids.slice(-keep);
+      const firstNl = tail.indexOf(nlId);
+      if (firstNl >= 0 && firstNl < tail.length - 1) tail = tail.slice(firstNl + 1);   // начинаем с целой реплики
+      return tail;
+    }
+
+    async function miniGenerateReply(userText, onUpdate) {
+      const { model, tokenizer: tok } = miniState.bundle;
+      const userIds = tok.encode(userText.replace(/\s*\n\s*/g, " "));
+      userIds.push(tok.nlId);
+      if (miniState.ctxIds.length + userIds.length + MINI_LIMITS.maxNewTokens > MINI_LIMITS.context) {
+        const tail = miniTrimTail(miniState.ctxIds, MINI_LIMITS.keepOnTrim, tok.nlId);
+        miniResetContext();
+        await miniFeed(tail);
+      }
+      const t0 = performance.now();
+      const ctxBefore = miniState.ctxIds.length;
+      await miniFeed(userIds);
+      const out = [], depths = [];
+      const banned = [tok.eosId, tok.bosId, tok.unkId];
+      let lines = 0, lineLen = 0, last = performance.now();
+      for (let n = 0; n < MINI_LIMITS.maxNewTokens && !miniState.cancelRequested; n++) {
+        const next = SLRMini.sampleToken(miniState.logits, {
+          context: miniState.ctxIds.slice(-MINI_LIMITS.context),
+          banned: lineLen === 0 ? [...banned, tok.nlId] : banned,      // пустых реплик не бывает
+          temperature: miniState.temperature,
+          topK: 50,
+          topP: 0.95,
+          repetitionPenalty: 1.1,
+          rng: miniState.rng
+        });
+        out.push(next);
+        depths.push(model.step(next, miniState.ctx, miniState.logits));
+        miniState.ctxIds.push(next);
+        if (next === tok.nlId) {
+          lines++;
+          lineLen = 0;
+          if (lines >= miniState.replyLines) break;
+        } else {
+          lineLen++;
+        }
+        onUpdate(out, depths);
+        if (performance.now() - last > 30) {
+          await yieldToBrowser();
+          last = performance.now();
+        }
+      }
+      if (!out.length || out[out.length - 1] !== tok.nlId) await miniFeed([tok.nlId]);   // закрываем реплику
+      const ms = performance.now() - t0;
+      const processed = miniState.ctxIds.length - ctxBefore;
+      return { ids: out, depths, ms, tokPerSec: processed / Math.max(ms / 1000, 1e-3), stopped: miniState.cancelRequested };
+    }
+
+    function miniCreateReplyBubble() {
+      const container = document.getElementById("chatMessagesContainer");
+      const wrapper = document.createElement("div");
+      wrapper.className = "flex justify-start";
+      wrapper.setAttribute("data-mini-reply", "1");
+      const card = document.createElement("div");
+      card.className = "max-w-[92%] rounded-2xl rounded-bl-sm p-3.5 bg-slate-900/95 border border-cyan-800/60 text-sm text-slate-100 space-y-2.5 shadow-lg";
+      const body = document.createElement("div");
+      body.className = "leading-relaxed mini-reply-body";
+      body.textContent = "…";
+      card.appendChild(body);
+      wrapper.appendChild(card);
+      container.appendChild(wrapper);
+      container.scrollTop = container.scrollHeight;
+      const tok = miniState.bundle.tokenizer;
+
+      const render = (ids, depths) => {
+        body.textContent = "";
+        if (appState.xrayEnabled) {
+          // «Рентген»: сколько шагов ядра мышления (0–3) роутер дал каждому кусочку слова
+          let lineStart = true;
+          ids.forEach((id, i) => {
+            if (id === tok.nlId) {
+              body.appendChild(document.createElement("br"));
+              lineStart = true;
+              return;
+            }
+            const piece = tok.pieceText(id);
+            const startsWord = piece.startsWith(" ");
+            if (startsWord && !lineStart) body.appendChild(document.createTextNode(" "));
+            const text = startsWord ? piece.slice(1) : piece;
+            const span = document.createElement("span");
+            const d = depths[i] || 0;
+            if (d > 0) {
+              span.className = "token-pill-thought";
+              const w = document.createElement("span");
+              w.textContent = text;                                     // textContent: защита от XSS
+              const sup = document.createElement("sup");
+              sup.className = "mono text-[9px] text-violet-300 font-bold";
+              sup.textContent = `[${d}т]`;
+              span.append(w, sup);
+            } else {
+              span.className = "token-pill-fast";
+              span.textContent = text;
+            }
+            body.appendChild(span);
+            lineStart = false;
+          });
+        } else {
+          const lines = tok.decode(ids).split("\n").map(s => s.replace(/^\s*[-–—]\s*/, "").trim()).filter(Boolean);
+          for (const line of lines) {
+            const div = document.createElement("div");
+            div.className = "mini-reply-line";
+            div.textContent = line;
+            body.appendChild(div);
+          }
+          if (!lines.length) body.textContent = "…";
+        }
+        container.scrollTop = container.scrollHeight;
+      };
+
+      return {
+        update: render,
+        finish(res) {
+          render(res.ids, res.depths);
+          const gen = res.ids.filter(id => id !== tok.nlId).length;
+          const thought = res.depths.reduce((a, b) => a + b, 0) / Math.max(1, res.depths.length);
+          const meta = document.createElement("div");
+          meta.className = "mini-meta pt-2 border-t border-slate-800/90 flex flex-wrap items-center justify-between gap-2 text-[11px] mono text-slate-400";
+          const a = document.createElement("span");
+          a.className = "text-cyan-300";
+          a.textContent = `🎬 mini • ${gen} ток.${res.stopped ? " • остановлено" : ""}`;
+          const b = document.createElement("span");
+          b.className = "text-violet-300";
+          b.textContent = `🧠 ${thought.toFixed(1)} шага ядра/токен`;
+          const c = document.createElement("span");
+          c.className = "text-emerald-300";
+          c.textContent = `⏱ ${(res.ms / 1000).toFixed(1)} с • ${res.tokPerSec.toFixed(0)} ток/с`;
+          meta.append(a, b, c);
+          card.appendChild(meta);
+          container.scrollTop = container.scrollHeight;
+        },
+        fail(e) {
+          body.textContent = `Ошибка mini: ${e && e.message ? e.message : e}`;
+        }
+      };
+    }
+
+    async function miniHandlePrompt(text) {
+      const clean = String(text || "").trim();
+      if (!clean) return;
+      if (!miniState.bundle) {
+        showToast(miniState.loading ? "Веса mini ещё загружаются…" : "Сначала загрузите веса mini — кнопки над чатом");
+        return;
+      }
+      if (miniState.busy) {
+        showToast("mini ещё пишет ответ…");
+        return;
+      }
+      appendChatMessage("user", clean);
+      const view = miniCreateReplyBubble();
+      miniState.busy = true;
+      miniState.cancelRequested = false;
+      miniUpdateSendButton();
+      try {
+        const res = await miniGenerateReply(clean, (ids, depths) => view.update(ids, depths));
+        miniState.lastSpeed = res.tokPerSec;
+        view.finish(res);
+      } catch (e) {
+        view.fail(e);
+      } finally {
+        miniState.busy = false;
+        miniState.cancelRequested = false;
+        miniUpdateSendButton();
+        updateMiniUI();
+      }
+    }
+
+    function bindMiniUI() {
+      document.getElementById("modeRegularBtn").addEventListener("click", () => setModelMode("regular"));
+      document.getElementById("modeMiniBtn").addEventListener("click", () => setModelMode("mini"));
+      document.getElementById("miniDownloadBtn").addEventListener("click", () => miniDownload());
+      const fileInput = document.getElementById("miniFileInput");
+      document.getElementById("miniPickBtn").addEventListener("click", () => fileInput.click());
+      fileInput.addEventListener("change", (e) => {
+        const file = e.target.files && e.target.files[0];
+        e.target.value = "";
+        if (file) miniLoadFile(file);
+      });
+      document.getElementById("miniLinesSelect").addEventListener("change", (e) => {
+        miniState.replyLines = Number(e.target.value) || 1;
+      });
+      document.getElementById("miniTempSelect").addEventListener("change", (e) => {
+        miniState.temperature = Number(e.target.value) || 0.8;
+      });
+      document.getElementById("miniQuickPromptsBar").addEventListener("click", (e) => {
+        const btn = e.target.closest("[data-prompt]");
+        if (btn) handleUserPrompt(btn.getAttribute("data-prompt"));
+      });
+      document.getElementById("miniForgetBtn").addEventListener("click", async () => {
+        try { await miniCacheDelete(); } catch (e) { /* ничего */ }
+        miniState.bundle = null;
+        miniResetContext();
+        updateMiniUI();
+        showToast("Веса mini удалены из памяти браузера");
+      });
+      let saved = "regular";
+      try { saved = localStorage.getItem("slr_net_model_mode") || "regular"; } catch (e) { /* песочница */ }
+      setModelMode(saved, { save: false });
     }
 
     // Отрисовка графика падения Loss на Canvas
@@ -2531,13 +3968,19 @@
       if (corpusTextarea) corpusTextarea.value = appState.corpusText;
 
       // Обучаем модель при старте (2 эпохи, несколько секунд), затем — стартовая реплика
-      trainEngineFromCorpus(appState.corpusText, 2).then(() => handleUserPrompt("привет ! как твои дела ?"));
+      trainEngineFromCorpus(appState.corpusText, 2).then(() => {
+        if (appState.modelMode !== "mini") handleRegularPrompt("привет ! как твои дела ?");
+      });
 
       // Форма отправки сообщения
       const chatForm = document.getElementById("chatInputForm");
       const chatInput = document.getElementById("chatInputField");
       chatForm.addEventListener("submit", (e) => {
         e.preventDefault();
+        if (miniState.busy) {                 // во время ответа mini кнопка работает как «Стоп»
+          miniState.cancelRequested = true;
+          return;
+        }
         const text = chatInput.value;
         if (!text.trim()) return;
         chatInput.value = "";
@@ -2558,6 +4001,7 @@
         while (container.children.length > 1) {
           container.removeChild(container.lastChild);
         }
+        miniResetContext();                   // mini тоже начинает новый диалог
         showToast("История диалога очищена");
       });
 
@@ -2575,6 +4019,9 @@
           showToast("Обычный текстовый режим без подсветки токенов");
         }
       });
+
+      // Переключатель «Обычная / mini» и загрузка весов mini
+      bindMiniUI();
 
       // Навигация по нижним вкладкам
       document.getElementById("navTabChat").addEventListener("click", () => switchTab("chat"));

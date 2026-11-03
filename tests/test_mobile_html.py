@@ -270,3 +270,169 @@ def test_cancel_button_stops_long_training(fresh_page):
     pg.wait_for_function("() => window.__done !== null", timeout=15000)
     assert pg.evaluate("() => [window.__done, appState.lastTrainStopped, appState.training]") == [True, True, False]
     assert pg.evaluate("() => document.getElementById('globalProgress').classList.contains('hidden')")
+
+
+# ------------------------------------------------------------------ режим mini: обученная LLM в браузере
+ROOT = os.path.dirname(HTML)
+MINI_NPZ = os.path.join(ROOT, "slr_net_subtitles_ru_mini.npz")
+MINI_DIALOGUE = ("- Привет! Как дела?\n- Хорошо, спасибо. А у тебя?\n- Тоже неплохо. Куда ты идёшь?\n"
+                 "- Домой, уже поздно.\nДоктор, что с ним?\n- С ним всё будет хорошо.\n")
+MINI_STRINGS = ["Привет! Как дела?", "  много   пробелов  ", "Ёлка и ёж", "№ 5… «цитата» — тире", "Hello, world 1999!",
+                "emoji 😀 тест", "\tтаб", "", "ДА НЕТ", "1234567890", "x²+y² ½", "Café naïve", "日本語", "- Что?",
+                "А-а-а!!!", "привет\nмир\n", "Мне было 17.", "Ты можешь взять их на 40%.", "O'Нил, сэр!"]
+
+
+def _load_mini(pg):
+    pg.click("#modeMiniBtn")
+    pg.set_input_files("#miniFileInput", MINI_NPZ)
+    pg.wait_for_function("() => miniState.bundle !== null && !miniState.loading", timeout=60000)
+
+
+@pytest.fixture(scope="module")
+def mini_page(browser):
+    if not os.path.exists(MINI_NPZ):
+        pytest.skip("нет файла весов slr_net_subtitles_ru_mini.npz")
+    pg = _open_page(browser)
+    _load_mini(pg)
+    yield pg
+    pg.close()
+
+
+def test_mini_in_browser_matches_pytorch(mini_page):
+    """JS-движок mini даёт те же токены и те же логиты, что slr_net_engine.py (PyTorch) по тому же файлу весов."""
+    torch = pytest.importorskip("torch")
+    pytest.importorskip("sentencepiece")
+    import base64
+
+    import numpy as np
+    sys.path.insert(0, ROOT)
+    import train_lm
+
+    model, tok = train_lm.load_model(MINI_NPZ, torch.device("cpu"))
+    ids = tok.encode(MINI_DIALOGUE)
+    cache = model.init_cache(1)
+    with torch.no_grad():
+        ref = torch.stack([model.step(torch.tensor([t]), cache)[0] for t in ids]).float().numpy()
+
+    js = mini_page.evaluate("""([strings, ids]) => {
+        const { model, tokenizer } = miniState.bundle;
+        const st = model.newState(), lg = new Float32Array(model.V), all = new Float32Array(ids.length * model.V);
+        const depths = ids.map((t, j) => { const d = model.step(t, st, lg); all.set(lg, j * model.V); return d; });
+        let bin = ""; const u8 = new Uint8Array(all.buffer);
+        for (let i = 0; i < u8.length; i += 0x8000) bin += String.fromCharCode.apply(null, u8.subarray(i, i + 0x8000));
+        return { enc: strings.map(s => tokenizer.encode(s)), logits: btoa(bin), depths };
+    }""", [MINI_STRINGS, ids])
+
+    assert js["enc"] == [tok.encode(s) for s in MINI_STRINGS]            # токенизатор = SentencePiece
+    assert mini_page.evaluate("(e) => e.map(x => miniState.bundle.tokenizer.decode(x))", js["enc"]) == \
+        [tok.decode(e) for e in js["enc"]]
+    got = np.frombuffer(base64.b64decode(js["logits"]), dtype=np.float32).reshape(ref.shape)
+    assert (got.argmax(1) == ref.argmax(1)).all()                          # тот же самый вероятный токен везде
+    assert np.abs(got - ref).max() < 0.25 and np.abs(got - ref).mean() < 0.01, np.abs(got - ref).max()
+    assert sum(js["depths"]) > 0 and max(js["depths"]) <= 3                # роутер ядра мышления работает
+
+
+def test_mini_chat_replies_without_freezing_and_can_stop(mini_page):
+    pg = mini_page
+    pg.evaluate("() => { miniState.rng = SLRMini.mulberry32(1); miniState.replyLines = 2; }")
+    _start_heartbeat(pg)
+    n0 = pg.evaluate("() => document.querySelectorAll('[data-mini-reply] .mini-meta').length")
+    pg.fill("#chatInputField", "Привет! Как дела?")
+    pg.click("#sendMsgBtn")
+    pg.wait_for_function(f"() => !miniState.busy && document.querySelectorAll('[data-mini-reply] .mini-meta').length === {n0 + 1}",
+                         timeout=60000)
+    reply = pg.evaluate("() => [...document.querySelectorAll('[data-mini-reply] .mini-reply-body')].pop().innerText")
+    letters = [c for c in reply if c.isalpha()]
+    assert len(letters) >= 3 and sum("а" <= c.lower() <= "я" or c.lower() == "ё" for c in letters) > 0.8 * len(letters), reply
+    assert 1 <= len([ln for ln in reply.split("\n") if ln.strip()]) <= 2
+    assert pg.evaluate("() => window.__maxGap") < 1000, "главный поток был занят слишком долго"
+    assert pg.evaluate("() => miniState.lastSpeed") > 5                     # токенов в секунду
+
+    # Кнопка «Стоп» прерывает длинный ответ
+    pg.evaluate("() => { miniState.replyLines = 99; MINI_LIMITS.maxNewTokens = 180; }")
+    pg.fill("#chatInputField", "Расскажи мне, что случилось.")
+    pg.click("#sendMsgBtn")
+    pg.wait_for_function("() => miniState.busy && document.getElementById('sendMsgBtn').innerText.includes('Стоп')", timeout=10000)
+    pg.click("#sendMsgBtn")
+    pg.wait_for_function("() => !miniState.busy", timeout=10000)
+    assert "остановлено" in pg.evaluate("() => [...document.querySelectorAll('[data-mini-reply] .mini-meta')].pop().innerText")
+    pg.evaluate("() => { miniState.replyLines = 2; MINI_LIMITS.maxNewTokens = 64; }")
+
+    # «Рентген»: видно, сколько шагов ядра мышления получил каждый кусочек слова
+    pg.click("#xrayToggleBtn")
+    pg.fill("#chatInputField", "Кто здесь?")
+    pg.click("#sendMsgBtn")
+    pg.wait_for_function("() => !miniState.busy && [...document.querySelectorAll('[data-mini-reply]')].pop().querySelector('.mini-meta')",
+                         timeout=60000)
+    sups = pg.evaluate("() => [...[...document.querySelectorAll('[data-mini-reply]')].pop().querySelectorAll('sup')].map(s => s.textContent)")
+    pg.click("#xrayToggleBtn")
+    assert sups and all(s in ("[1т]", "[2т]", "[3т]") for s in sups)
+    assert pg.errors == []
+
+
+def test_switching_back_to_regular_model_keeps_old_behaviour(mini_page):
+    pg = mini_page
+    pg.click("#modeRegularBtn")
+    assert pg.evaluate("() => appState.modelMode") == "regular"
+    assert pg.evaluate("() => document.getElementById('miniPanel').classList.contains('hidden')")
+    pg.fill("#chatInputField", "В чём метод Шерлока Холмса?")
+    pg.click("#sendMsgBtn")
+    last = pg.evaluate("() => [...document.querySelectorAll('#chatMessagesContainer > div')].pop().innerText")
+    assert "дедукц" in last.lower()
+    pg.click("#modeMiniBtn")                                               # веса остаются загруженными
+    assert pg.evaluate("() => miniState.bundle !== null && appState.modelMode === 'mini'")
+
+
+def test_mini_weights_are_cached_and_mode_is_remembered(browser):
+    if not os.path.exists(MINI_NPZ):
+        pytest.skip("нет файла весов slr_net_subtitles_ru_mini.npz")
+    pg = _open_page(browser)
+    try:
+        _load_mini(pg)
+        pg.reload()
+        pg.wait_for_function("() => miniState.bundle !== null", timeout=60000)
+        assert pg.evaluate("() => [appState.modelMode, miniState.source]") == ["mini", "из памяти браузера"]
+        pg.click("#miniForgetBtn")
+        pg.wait_for_function("() => miniState.bundle === null", timeout=10000)
+        pg.reload()
+        pg.wait_for_function("() => appState.engine !== null", timeout=60000)
+        pg.wait_for_timeout(500)
+        assert pg.evaluate("() => miniState.bundle === null && !document.getElementById('miniLoadBox').classList.contains('hidden')")
+        assert pg.errors == []
+    finally:
+        pg.close()
+
+
+def test_mini_download_button_fetches_weights_from_server(browser):
+    """Страница, открытая с сервера (например, GitHub Pages), скачивает веса, лежащие рядом с ней."""
+    if not os.path.exists(MINI_NPZ):
+        pytest.skip("нет файла весов slr_net_subtitles_ru_mini.npz")
+    import functools
+    import http.server
+    import threading
+
+    class Quiet(http.server.SimpleHTTPRequestHandler):
+        def log_message(self, *args):
+            pass
+
+    srv = http.server.ThreadingHTTPServer(("127.0.0.1", 0), functools.partial(Quiet, directory=ROOT))
+    threading.Thread(target=srv.serve_forever, daemon=True).start()
+    pg = browser.new_page()
+    errors = []
+    pg.on("pageerror", lambda e: errors.append(str(e)))
+    pg.route("http*://**", lambda route: route.continue_() if "127.0.0.1" in route.request.url else route.abort())
+    try:
+        pg.goto(f"http://127.0.0.1:{srv.server_address[1]}/slr_net_mobile_chat.html")
+        pg.wait_for_function("() => appState.engine !== null", timeout=60000)
+        pg.click("#modeMiniBtn")
+        pg.evaluate("""() => { window.__texts = new Set();
+            new MutationObserver(() => window.__texts.add(document.getElementById('miniLoadText').textContent))
+              .observe(document.getElementById('miniLoadText'), { childList: true, characterData: true, subtree: true }); }""")
+        pg.click("#miniDownloadBtn")
+        pg.wait_for_function("() => miniState.bundle !== null && !miniState.loading", timeout=60000)
+        assert pg.evaluate("() => miniState.source") == "с сервера"
+        assert pg.evaluate("() => [...window.__texts].some(t => t.startsWith('Скачано'))")
+        assert errors == []
+    finally:
+        pg.close()
+        srv.shutdown()
