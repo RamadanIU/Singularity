@@ -186,6 +186,39 @@
     .pulse-dot {
       animation: pulseGlow 2s infinite ease-in-out;
     }
+
+    /* Прогресс загрузки файла и обучения (работает и без Tailwind, офлайн) */
+    .progress-track {
+      position: relative;
+      height: 10px;
+      border-radius: 999px;
+      background: rgba(30, 41, 59, 0.9);
+      border: 1px solid rgba(148, 163, 184, 0.18);
+      overflow: hidden;
+    }
+    .progress-fill {
+      height: 100%;
+      width: 0%;
+      border-radius: 999px;
+      background: linear-gradient(90deg, #8b5cf6, #06b6d4);
+      transition: width 0.25s ease;
+    }
+    .global-progress {
+      height: 3px;
+      background: rgba(30, 41, 59, 0.9);
+      flex-shrink: 0;
+      overflow: hidden;
+      cursor: pointer;
+    }
+    .global-progress > div {
+      height: 100%;
+      width: 0%;
+      background: linear-gradient(90deg, #8b5cf6, #06b6d4);
+      transition: width 0.25s ease;
+    }
+    .hidden {
+      display: none !important;
+    }
   </style>
 </head>
 <body>
@@ -219,6 +252,11 @@
         </button>
       </div>
     </header>
+
+    <!-- Тонкая полоса прогресса: видна на любой вкладке, пока читается файл или идёт обучение -->
+    <div id="globalProgress" class="global-progress hidden" title="Идёт обучение — нажмите, чтобы открыть подробности">
+      <div id="globalProgressFill"></div>
+    </div>
 
     <!-- УВЕДОМЛЕНИЕ (TOAST) ВМЕСТО БЛОКИРУЕМЫХ ALERT -->
     <div
@@ -292,7 +330,7 @@
             type="text"
             autocomplete="off"
             placeholder="Напишите вопрос на русском..."
-            class="flex-1 h-11 px-3.5 rounded-xl bg-slate-900 border border-slate-700/80 text-white placeholder-slate-500 focus:outline-none focus:border-cyan-400"
+            class="flex-1 min-w-0 h-11 px-3.5 rounded-xl bg-slate-900 border border-slate-700/80 text-white placeholder-slate-500 focus:outline-none focus:border-cyan-400"
           />
           <button
             id="sendMsgBtn"
@@ -326,14 +364,27 @@
           <div class="flex items-center justify-between gap-2">
             <div>
               <div class="text-xs font-semibold text-cyan-300">📂 Загрузить файл субтитров (.txt / .srt)</div>
-              <div class="text-[11px] text-slate-400">Автоочистка таймкодов и склейка диалогов</div>
+              <div class="text-[11px] text-slate-400">Автоочистка таймкодов и склейка диалогов. Файл любого размера читается по частям (UTF-8 или Windows-1251); из большого файла для обучения в браузере берётся случайная выборка диалогов.</div>
             </div>
             <label for="subtitleFileInput" class="px-3 py-2 rounded-lg bg-cyan-600 hover:bg-cyan-500 text-white font-semibold text-xs cursor-pointer shrink-0">
               Выбрать .txt/.srt
             </label>
-            <input id="subtitleFileInput" type="file" accept=".txt,.srt" class="hidden" />
+            <input id="subtitleFileInput" type="file" accept=".txt,.srt,text/plain" class="hidden" />
           </div>
         </div>
+
+        <!-- Прогресс чтения файла и обучения -->
+        <div id="trainProgressBox" class="hidden p-3 rounded-xl bg-slate-950/80 border border-violet-500/40 space-y-2" role="status" aria-live="polite">
+          <div class="flex items-center justify-between gap-2">
+            <div id="trainProgressPhase" class="text-xs font-semibold text-violet-200">Подготовка…</div>
+            <button id="trainCancelBtn" type="button" class="px-2.5 py-1 rounded-lg bg-slate-800 border border-slate-600 text-[11px] text-slate-200 shrink-0">
+              Остановить
+            </button>
+          </div>
+          <div class="progress-track"><div id="trainProgressFill" class="progress-fill"></div></div>
+          <div id="trainProgressText" class="mono text-[11px] text-slate-400">0%</div>
+        </div>
+        <div id="trainResultNote" class="hidden text-[11px] text-slate-400 leading-relaxed"></div>
 
         <div class="p-3 rounded-xl bg-slate-950/80 border border-slate-800 space-y-2">
           <label for="newFactInput" class="block text-xs font-semibold text-slate-300">
@@ -344,7 +395,7 @@
               id="newFactInput"
               type="text"
               placeholder="кто тебя создал ? меня создали как сверхэкономную сеть ."
-              class="flex-1 h-10 px-3 rounded-lg bg-slate-900 border border-slate-700 text-white text-xs"
+              class="flex-1 min-w-0 h-10 px-3 rounded-lg bg-slate-900 border border-slate-700 text-white text-xs"
             />
             <button
               id="addFactAndTrainBtn"
@@ -664,69 +715,107 @@
       "работ": ["устроен", "нейросет", "троичн", "энерг", "интеллект"]
     };
 
-    function parseSubtitleOrTextCorpusJS(rawText) {
-      let cleaned = rawText.replace(/<[^>]+>/g, " ").replace(/\[[^\]]+\]/g, " ");
-      const rawLines = cleaned.split(/\r?\n/);
-      const filtered = [];
-      let pending = [];
+    // Разбор субтитров и текста ПОТОКОМ: строки подаются по одной (pushLine), готовые цепочки
+    // «реплика — ответ» отдаются в onChain. Так файл любого размера обрабатывается кусками и
+    // никогда не держится в памяти целиком (раньше 300 МБ читались в одну строку и разбирались
+    // за один синхронный проход — страница «замерзала» и падала).
+    const MAX_DIALOGUE_LINES = 6;
 
-      for (const line of rawLines) {
-        const s = line.trim();
-        if (!s || s.startsWith("#")) {
-          if (pending.length >= 2) {
-            let q = pending[0].replace(/^[—\-\s]+/, "").trim();
-            let a = pending.slice(1).map(x => x.replace(/^[—\-\s]+/, "").trim()).join(" ");
-            if (q && a) {
-              if (!["?", "!", "."].includes(q[q.length - 1])) q += " ?";
-              filtered.push(q + " " + a);
-            }
-          }
-          pending = [];
-          continue;
-        }
-        if (/^\d+$/.test(s) || s.includes("-->") || /^\d{2}:\d{2}:\d{2}/.test(s)) continue;
-        if (s.startsWith("—") || s.startsWith("- ")) {
-          pending.push(s);
-          continue;
-        }
-        if (pending.length > 0) {
-          pending.push(s);
-          continue;
-        }
-        filtered.push(s);
+    function joinDialogueJS(pending) {
+      if (pending.length < 2) return null;
+      let q = pending[0].replace(/^[—\-\s]+/, "").trim();
+      const a = pending.slice(1).map(x => x.replace(/^[—\-\s]+/, "").trim()).join(" ");
+      if (!q || !a) return null;
+      if (!["?", "!", "."].includes(q[q.length - 1])) q += " ?";
+      return q + " " + a;
+    }
+
+    function hasInternalSplitJS(cur) {
+      for (const p of ["?", "!", "."]) {
+        const pos = cur.indexOf(p);
+        if (pos >= 2 && pos < cur.length - 4) return true;
       }
-      if (pending.length >= 2) {
-        let q = pending[0].replace(/^[—\-\s]+/, "").trim();
-        let a = pending.slice(1).map(x => x.replace(/^[—\-\s]+/, "").trim()).join(" ");
-        if (q && a) {
-          if (!["?", "!", "."].includes(q[q.length - 1])) q += " ?";
-          filtered.push(q + " " + a);
-        }
+      return false;
+    }
+
+    class SubtitleStreamParserJS {
+      constructor(onChain) {
+        this.onChain = onChain;
+        this.pending = [];     // реплики диалога через тире
+        this.held = null;      // одиночная строка, которая ждёт пару
       }
 
-      const chains = [];
-      let i = 0;
-      while (i < filtered.length) {
-        let cur = filtered[i];
-        let hasSplit = false;
-        for (const p of ["?", "!", "."]) {
-          const pos = cur.indexOf(p);
-          if (pos >= 2 && pos < cur.length - 4) { hasSplit = true; break; }
+      // Второй этап: одиночные короткие строки склеиваются попарно в «стимул — ответ»
+      _emitFiltered(s) {
+        if (this.held === null) {
+          if (hasInternalSplitJS(s)) this.onChain(s);
+          else this.held = s;
+          return;
         }
-        if (hasSplit) {
-          chains.push(cur);
-          i++;
-        } else if (i + 1 < filtered.length) {
-          let nxt = filtered[i + 1];
-          if (!["?", "!", "."].includes(cur[cur.length - 1])) cur += " .";
-          if (!["?", "!", "."].includes(nxt[nxt.length - 1])) nxt += " .";
-          chains.push(cur + " " + nxt);
-          i += 2;
+        let cur = this.held, nxt = s;
+        this.held = null;
+        if (!["?", "!", "."].includes(cur[cur.length - 1])) cur += " .";
+        if (!["?", "!", "."].includes(nxt[nxt.length - 1])) nxt += " .";
+        this.onChain(cur + " " + nxt);
+      }
+
+      _flushPending() {
+        const p = this.pending;
+        if (p.length === 0) return;
+        this.pending = [];
+        if (p.length >= 2) {
+          const joined = joinDialogueJS(p);
+          if (joined) this._emitFiltered(joined);
         } else {
-          if (cur.split(/\s+/).length >= 4) chains.push(cur);
-          i++;
+          // Одиночная реплика с тире раньше молча терялась — теперь идёт как обычная строка
+          const single = p[0].replace(/^[—\-\s]+/, "").trim();
+          if (single) this._emitFiltered(single);
         }
       }
+
+      pushLine(line) {
+        const s = line.replace(/<[^>]+>/g, " ").replace(/\[[^\]]+\]/g, " ").replace(/\s+/g, " ").trim();
+        if (!s || s.startsWith("#")) {
+          this._flushPending();
+          return;
+        }
+        if (/^\d+$/.test(s) || s.includes("-->") || /^\d{2}:\d{2}:\d{2}/.test(s)) return;
+        const isDash = s.startsWith("—") || s.startsWith("- ");
+        if (this.pending.length > 0 && !isDash) {
+          // Строка без тире продолжает реплику, только если предыдущая не закончена знаком препинания.
+          // Раньше в тексте без пустых строк (типичный дамп субтитров) после первой реплики с тире
+          // ВЕСЬ остаток файла склеивался в одну бесконечную «реплику».
+          const prev = this.pending[this.pending.length - 1];
+          if (/[.?!…]["»)]?$/.test(prev) || this.pending.length >= MAX_DIALOGUE_LINES) {
+            this._flushPending();
+          } else {
+            this.pending.push(s);
+            return;
+          }
+        }
+        if (isDash) {
+          if (this.pending.length >= MAX_DIALOGUE_LINES) this._flushPending();
+          this.pending.push(s);
+          return;
+        }
+        this._emitFiltered(s);
+      }
+
+      finish() {
+        this._flushPending();
+        if (this.held !== null) {
+          if (this.held.split(/\s+/).length >= 4) this.onChain(this.held);
+          this.held = null;
+        }
+      }
+    }
+
+    // Разбор целого текста (корпус из поля ввода, стартовый корпус) — та же логика, что и в потоке
+    function parseSubtitleOrTextCorpusJS(rawText) {
+      const chains = [];
+      const parser = new SubtitleStreamParserJS(c => chains.push(c));
+      for (const line of rawText.split(/\r?\n/)) parser.pushLine(line);
+      parser.finish();
       return chains;
     }
 
@@ -1026,8 +1115,11 @@
         return clean.split(/\s+/).filter(Boolean);
       }
 
-      // Учимся на уже разобранных цепочках (раньше в словарь попадали таймкоды и номера субтитров)
-      fit(chains) {
+      // Учимся на уже разобранных цепочках (раньше в словарь попадали таймкоды и номера субтитров).
+      // maxVocab ограничивает словарь самыми частыми словами: размер выходного слоя и время шага
+      // обучения пропорциональны словарю, а у субтитров на сотни мегабайт — сотни тысяч словоформ.
+      // Редкие формы потом сводятся к частым той же основы (resolveId) или к <unk>.
+      fit(chains, maxVocab = Infinity) {
         const lines = Array.isArray(chains) ? chains : chains.split(/\n+/).map(l => l.trim()).filter(Boolean);
         const freq = new Map();
         for (const line of lines) {
@@ -1037,9 +1129,11 @@
         }
         const sorted = Array.from(freq.keys()).sort((a, b) => {
           const diff = freq.get(b) - freq.get(a);
-          return diff !== 0 ? diff : a.localeCompare(b);
+          return diff !== 0 ? diff : (a < b ? -1 : a > b ? 1 : 0);
         });
-        for (const tok of sorted) this.addToken(tok);
+        const limit = Math.max(0, maxVocab - this.idToToken.length);
+        for (let i = 0; i < sorted.length && i < limit; i++) this.addToken(sorted[i]);
+        this.droppedWords = Math.max(0, sorted.length - limit);
       }
 
       // Точное слово или та же словоформа (отличие только в последних <= 2 буквах).
@@ -1421,15 +1515,21 @@
         const tgt = seqIds.slice(1, L + 1);
         const fwd = this.forwardSequence(inp, slotIdx, 0.0);
 
-        const grads = {};
-        for (const k of this._paramNames) grads[k] = new Float32Array(this[k].length);
+        // Буферы градиентов создаются один раз и обнуляются (раньше на КАЖДУЮ фразу заново
+        // выделялись массивы размером со всю модель — сборщик мусора на телефоне не успевал).
+        if (!this._gradBuf) {
+          this._gradBuf = {};
+          for (const k of this._paramNames) this._gradBuf[k] = new Float32Array(this[k].length);
+        }
+        const grads = this._gradBuf;
+        for (const k of this._paramNames) grads[k].fill(0);
 
-        const eff = q => {               // эффективная матрица gamma * W_t (для обратного прохода)
-          const w = new Float32Array(q.wTern.length);
-          for (let i = 0; i < w.length; i++) w[i] = q.wTern[i] * q.gamma;
-          return w;
-        };
-        const wOut = eff(fwd.qOut), wTh = eff(fwd.qThink), wC1 = eff(fwd.qCtx1), wC2 = eff(fwd.qCtx2), wSsm = eff(fwd.qSsm);
+        // Эффективная матрица = gamma * W_t. Не копируем её, а умножаем на gamma по ходу дела.
+        const tOut = fwd.qOut.wTern, gOut = fwd.qOut.gamma;
+        const tTh = fwd.qThink.wTern, gTh = fwd.qThink.gamma;
+        const tC1 = fwd.qCtx1.wTern, gC1 = fwd.qCtx1.gamma;
+        const tC2 = fwd.qCtx2.wTern, gC2 = fwd.qCtx2.gamma;
+        const tSsm = fwd.qSsm.wTern, gSsm = fwd.qSsm.gamma;
 
         let totalLoss = 0.0;
         let correct = 0;
@@ -1463,9 +1563,10 @@
             const rowOff = v * D;
             for (let d = 0; d < D; d++) {
               grads.w_out[rowOff + d] += dl * hFinal[d];
-              dhFinal[d] += dl * wOut[rowOff + d];
+              dhFinal[d] += dl * tOut[rowOff + d];
             }
           }
+          for (let d = 0; d < D; d++) dhFinal[d] *= gOut;
 
           const cProb = fwd.cProbList[t];
           const hCtx = fwd.hCtxList[t];
@@ -1501,9 +1602,10 @@
                 const du = 0.35 * dz[r] * (1.0 - th[r] * th[r]);
                 if (du === 0) continue;
                 const rowOff = r * D;
+                const duG = du * gTh;
                 for (let c = 0; c < D; c++) {
                   grads.w_think[rowOff + c] += du * zk[c];
-                  dzPrev[c] += du * wTh[rowOff + c];
+                  dzPrev[c] += duG * tTh[rowOff + c];
                 }
               }
               dz = dzPrev;
@@ -1538,17 +1640,18 @@
             const gIn = dIn[r];
             const g1 = 0.8 * dh[r];
             const g2 = 0.5 * dh[r];
+            const gInW = gIn * gSsm, g1W = g1 * gC1, g2W = g2 * gC2;
             dX[t][r] += gIn;
             for (let c = 0; c < D; c++) {
               grads.w_ssm[rowOff + c] += gIn * xCur[c];
-              dX[t][c] += gIn * wSsm[rowOff + c];
+              dX[t][c] += gInW * tSsm[rowOff + c];
               if (xPrev1) {
                 grads.w_ctx1[rowOff + c] += g1 * xPrev1[c];
-                dX[t - 1][c] += g1 * wC1[rowOff + c];
+                dX[t - 1][c] += g1W * tC1[rowOff + c];
               }
               if (xPrev2) {
                 grads.w_ctx2[rowOff + c] += g2 * xPrev2[c];
-                dX[t - 2][c] += g2 * wC2[rowOff + c];
+                dX[t - 2][c] += g2W * tC2[rowOff + c];
               }
             }
           }
@@ -1745,6 +1848,9 @@
       lastLoss: 0,
       lastTrainMs: 0,
       training: false,
+      cancelRequested: false,
+      lastTrainStopped: false,
+      lastCorpusStats: null,
       pendingUnknownQuestion: null
     };
 
@@ -1759,55 +1865,298 @@
       }, 2800);
     }
 
-    // Обучение асинхронное: каждые ~40 мс отдаём управление браузеру, чтобы страница не «зависала»
-    // (раньше длинное обучение блокировало интерфейс целиком). Возвращает Promise<boolean>.
+    // Пределы браузерного прототипа. Время шага обучения пропорционально (словарь × длина фразы),
+    // поэтому без пределов 300 МБ субтитров означали бы миллионы фраз и сотни тысяч слов — часы
+    // счёта и гигабайты памяти (страница «зависала» и падала). Обучение настоящей языковой модели
+    // на всём файле — train_lm.py на компьютере.
+    const BROWSER_LIMITS = {
+      maxTrainChains: 1500,     // фраз в одном обучении (стартовый корпус + выборка остального)
+      maxVocab: 5000,           // слов в словаре (самые частые)
+      maxChainWords: 40,        // слишком длинные «фразы» из файла пропускаем
+      maxFileChains: 1000,      // диалогов из одного файла: случайная выборка по ВСЕМУ файлу
+      fileChunkBytes: 1 << 20,  // файл читается по 1 МБ, между кусками страница отвечает
+      maxStoredChars: 4000000   // больше в localStorage всё равно не помещается
+    };
+
+    // Отдать управление браузеру: перерисовать прогресс, обработать нажатия
+    function yieldToBrowser() {
+      return new Promise(resolve => setTimeout(resolve, 0));
+    }
+
+    function formatDuration(ms) {
+      const sec = Math.max(0, Math.round(ms / 1000));
+      if (sec < 60) return `${sec} с`;
+      const m = Math.floor(sec / 60);
+      if (m < 60) return `${m} мин ${sec % 60} с`;
+      return `${Math.floor(m / 60)} ч ${m % 60} мин`;
+    }
+
+    function formatBytes(n) {
+      if (n >= 1024 * 1024) return `${(n / 1024 / 1024).toFixed(1)} МБ`;
+      if (n >= 1024) return `${(n / 1024).toFixed(0)} КБ`;
+      return `${n} Б`;
+    }
+
+    // Прогресс: подробный блок во вкладке «Дообучение» + тонкая полоса под шапкой на любой вкладке
+    function setTrainProgress(phase, fraction, detail = "") {
+      const pct = Math.max(0, Math.min(100, fraction * 100));
+      const box = document.getElementById("trainProgressBox");
+      const fill = document.getElementById("trainProgressFill");
+      const phaseEl = document.getElementById("trainProgressPhase");
+      const text = document.getElementById("trainProgressText");
+      const global = document.getElementById("globalProgress");
+      const gfill = document.getElementById("globalProgressFill");
+      const badge = document.getElementById("trainStatusBadge");
+      if (box) box.classList.remove("hidden");
+      if (global) global.classList.remove("hidden");
+      if (fill) fill.style.width = pct.toFixed(1) + "%";
+      if (gfill) gfill.style.width = pct.toFixed(1) + "%";
+      if (phaseEl) phaseEl.textContent = phase;
+      if (text) text.textContent = `${Math.floor(pct)}%` + (detail ? ` · ${detail}` : "");
+      if (badge) badge.textContent = `${Math.floor(pct)}%`;
+    }
+
+    function hideTrainProgress() {
+      for (const id of ["trainProgressBox", "globalProgress"]) {
+        const el = document.getElementById(id);
+        if (el) el.classList.add("hidden");
+      }
+      const badge = document.getElementById("trainStatusBadge");
+      if (badge) badge.textContent = "Готов";
+    }
+
+    function showTrainNote(text) {
+      const el = document.getElementById("trainResultNote");
+      if (!el) return;
+      el.textContent = text;
+      el.classList.toggle("hidden", !text);
+    }
+
+    function saveCorpusToStorage(text) {
+      try {
+        if (text.length > BROWSER_LIMITS.maxStoredChars) {
+          localStorage.removeItem("slr_net_mobile_corpus");
+          return false;
+        }
+        localStorage.setItem("slr_net_mobile_corpus", text);
+        return true;
+      } catch (e) {
+        return false;   // песочница / переполнение квоты
+      }
+    }
+
+    let _starterChainCount = null;
+    function starterChainCount() {
+      if (_starterChainCount === null) _starterChainCount = parseSubtitleOrTextCorpusJS(STARTER_CORPUS).length;
+      return _starterChainCount;
+    }
+
+    // Не больше maxChains фраз: начало корпуса (стартовые знания) остаётся целиком, из остального —
+    // равномерная выборка с сохранением порядка (алгоритм выборки Кнута «S»).
+    function limitTrainingChains(chains, maxChains) {
+      if (chains.length <= maxChains) return chains;
+      const head = Math.min(starterChainCount(), Math.floor(maxChains / 2));
+      const picked = chains.slice(0, head);
+      const rng = new PRNG(chains.length * 2654435761);
+      let need = maxChains - head;
+      for (let i = head; i < chains.length && need > 0; i++) {
+        if (rng.nextFloat() * (chains.length - i) < need) {
+          picked.push(chains[i]);
+          need--;
+        }
+      }
+      return picked;
+    }
+
+    function readBlobAsArrayBuffer(blob) {
+      if (typeof blob.arrayBuffer === "function") return blob.arrayBuffer();
+      return new Promise((resolve, reject) => {          // старые браузеры
+        const fr = new FileReader();
+        fr.onload = () => resolve(fr.result);
+        fr.onerror = () => reject(fr.error || new Error("ошибка чтения файла"));
+        fr.readAsArrayBuffer(blob);
+      });
+    }
+
+    // UTF-8, UTF-16 (по BOM) или Windows-1251 — в ней сохранены многие русские .srt
+    // (раньше такие файлы читались как UTF-8 и превращались в «кракозябры»).
+    function detectTextEncoding(bytes) {
+      if (bytes.length >= 2 && bytes[0] === 0xFF && bytes[1] === 0xFE) return "utf-16le";
+      if (bytes.length >= 2 && bytes[0] === 0xFE && bytes[1] === 0xFF) return "utf-16be";
+      try {
+        new TextDecoder("utf-8", { fatal: true }).decode(bytes, { stream: true });
+        return "utf-8";
+      } catch (e) {
+        return "windows-1251";
+      }
+    }
+
+    // Потоковое чтение файла любого размера: по 1 МБ, с паузами для браузера и прогрессом.
+    // В памяти держится только выборка из maxChains диалогов (reservoir sampling — равномерно
+    // по всему файлу, а не только его начало), а не весь файл.
+    async function readCorpusFileStreaming(file, { maxChains, maxChainWords, onProgress, isCancelled }) {
+      const chunk = BROWSER_LIMITS.fileChunkBytes;
+      const headBytes = new Uint8Array(await readBlobAsArrayBuffer(file.slice(0, Math.min(file.size, 65536))));
+      const encoding = detectTextEncoding(headBytes);
+      let decoder;
+      try {
+        decoder = new TextDecoder(encoding);
+      } catch (e) {
+        decoder = new TextDecoder("utf-8");
+      }
+      const rng = new PRNG((file.size % 2147483647) + 17);
+      const sample = [];
+      let seen = 0, lines = 0, skipped = 0;
+      const parser = new SubtitleStreamParserJS(chain => {
+        const nWords = chain.split(" ").length;
+        if (nWords < 4 || nWords > maxChainWords) {
+          skipped++;
+          return;
+        }
+        seen++;
+        if (sample.length < maxChains) {
+          sample.push({ idx: seen, text: chain });
+        } else {
+          const j = Math.floor(rng.nextFloat() * seen);
+          if (j < maxChains) sample[j] = { idx: seen, text: chain };
+        }
+      });
+
+      let carry = "";
+      for (let pos = 0; pos < file.size; pos += chunk) {
+        if (isCancelled && isCancelled()) return null;
+        const end = Math.min(file.size, pos + chunk);
+        const buf = await readBlobAsArrayBuffer(file.slice(pos, end));
+        const last = end >= file.size;
+        const text = carry + decoder.decode(new Uint8Array(buf), { stream: !last });
+        const parts = text.split(/\r?\n/);
+        carry = last ? "" : parts.pop();
+        if (carry.length > 100000) {      // «строка» без переводов строк на сотни КБ — это не субтитры
+          carry = "";
+          skipped++;
+        }
+        for (const line of parts) parser.pushLine(line);
+        lines += parts.length;
+        if (onProgress) onProgress(end / file.size, { lines, chains: seen, encoding });
+        await yieldToBrowser();
+      }
+      parser.finish();
+      sample.sort((a, b) => a.idx - b.idx);          // возвращаем порядок, как в файле
+      return { chains: sample.map(x => x.text), totalChains: seen, lines, skipped, encoding, bytes: file.size };
+    }
+
+    // Обучение асинхронное и по шагам: каждые ~35 мс отдаём управление браузеру, показываем этап,
+    // процент и оставшееся время; кнопка «Остановить» прерывает обучение, сохраняя то, что сеть уже
+    // выучила. Раньше разбор корпуса, словарь и память строились одним синхронным куском ДО первого
+    // обновления прогресса — на большом файле страница висела минутами. Возвращает Promise<boolean>.
     async function trainEngineFromCorpus(corpusText, epochs = 32) {
       if (appState.training) {
-        showToast("Обучение уже идёт — подождите немного");
+        showToast("Обучение уже идёт — подождите или нажмите «Остановить»");
         return false;
       }
       appState.training = true;
-      const badge = document.getElementById("trainStatusBadge");
+      appState.cancelRequested = false;
       try {
         const t0 = performance.now();
-        const rawLines = parseSubtitleOrTextCorpusJS(corpusText);
+        setTrainProgress("Разбор корпуса", 0);
+        await yieldToBrowser();
+
+        // 1) Разбор по кускам
+        const allChains = [];
+        const parser = new SubtitleStreamParserJS(c => allChains.push(c));
+        const textLines = corpusText.split(/\r?\n/);
+        let lastYield = performance.now();
+        for (let i = 0; i < textLines.length; i++) {
+          parser.pushLine(textLines[i]);
+          if ((i & 511) === 0 && performance.now() - lastYield > 30) {
+            setTrainProgress("Разбор корпуса", 0.03 * i / textLines.length,
+              `${i.toLocaleString("ru-RU")} из ${textLines.length.toLocaleString("ru-RU")} строк`);
+            await yieldToBrowser();
+            lastYield = performance.now();
+            if (appState.cancelRequested) return false;
+          }
+        }
+        parser.finish();
+
+        // 2) Не больше maxTrainChains фраз, словарь — самые частые слова
+        const rawLines = limitTrainingChains(allChains, BROWSER_LIMITS.maxTrainChains);
+        appState.lastCorpusStats = { totalChains: allChains.length, usedChains: rawLines.length };
+        setTrainProgress("Словарь и память фактов", 0.04, `${rawLines.length.toLocaleString("ru-RU")} фраз`);
+        await yieldToBrowser();
+        if (appState.cancelRequested) return false;
+
         const tokenizer = new MorphemeTokenizerJS();
-        tokenizer.fit(rawLines);
+        tokenizer.fit(rawLines, BROWSER_LIMITS.maxVocab);
+        await yieldToBrowser();
         const sequences = [];
         const hintsList = [];
-
+        const keptLines = [];
         for (const line of rawLines) {
           const ids = tokenizer.encode(line, true, true);
           if (ids.length >= 4) {
             sequences.push(ids);
             hintsList.push(tokenizer.computeComplexityHints(ids));
+            keptLines.push(line);
           }
         }
+        if (sequences.length === 0) {
+          showToast("В корпусе нет ни одной подходящей фразы (нужно хотя бы 2 слова)");
+          return false;
+        }
 
+        await yieldToBrowser();
         const engine = new SLRNetBrowserEngine(tokenizer.idToToken.length, 32, Math.max(24, sequences.length + 4));
-        engine.populateFactMemory(sequences, rawLines, tokenizer);
+        await yieldToBrowser();
+        engine.populateFactMemory(sequences, keptLines, tokenizer);
+        await yieldToBrowser();
+        if (appState.cancelRequested) return false;
 
+        // 3) Обучение
         const lossHistory = [];
         let lastLoss = 0;
         let lastAcc = 0;
-        let lastYield = performance.now();
+        let stopped = false;
+        const n = sequences.length;
+        const totalSteps = epochs * n;
+        let done = 0;
+        const tTrain = performance.now();
+        const order = Array.from({ length: n }, (_, i) => i);
+        const rng = new PRNG(2024 + n);
+        lastYield = performance.now();
 
-        for (let ep = 1; ep <= epochs; ep++) {
+        for (let ep = 1; ep <= epochs && !stopped; ep++) {
           const lr = 0.009 * (0.2 + 0.8 * 0.5 * (1.0 + Math.cos(Math.PI * ep / epochs)));
+          // Перемешиваем порядок каждую эпоху (как в Python-версии): так сеть сходится лучше
+          for (let i = n - 1; i > 0; i--) {
+            const j = Math.floor(rng.nextFloat() * (i + 1));
+            const tmp = order[i]; order[i] = order[j]; order[j] = tmp;
+          }
           let epLoss = 0;
           let epAcc = 0;
-          for (let i = 0; i < sequences.length; i++) {
+          let epCount = 0;
+          for (let k = 0; k < n; k++) {
+            const i = order[k];
             const res = engine.trainSequenceStep(sequences[i], hintsList[i], lr, i);
             epLoss += res.loss;
             epAcc += res.acc;
-            if (performance.now() - lastYield > 40) {
-              if (badge) badge.textContent = `Эпоха ${ep}/${epochs} · ${Math.round(100 * (i + 1) / sequences.length)}%`;
-              await new Promise(r => setTimeout(r, 0));
+            epCount++;
+            done++;
+            if (performance.now() - lastYield > 35) {
+              const frac = done / totalSteps;
+              const elapsed = performance.now() - tTrain;
+              const eta = elapsed / done * (totalSteps - done);
+              setTrainProgress(`Обучение: эпоха ${ep} из ${epochs}`, 0.05 + 0.95 * frac,
+                `фраза ${k + 1}/${n} · loss ${(epLoss / epCount).toFixed(3)} · осталось ~${formatDuration(eta)}`);
+              await yieldToBrowser();
               lastYield = performance.now();
+              if (appState.cancelRequested) {
+                stopped = true;
+                break;
+              }
             }
           }
-          lastLoss = epLoss / Math.max(1, sequences.length);
-          lastAcc = epAcc / Math.max(1, sequences.length);
+          lastLoss = epLoss / Math.max(1, epCount);
+          lastAcc = epAcc / Math.max(1, epCount);
           lossHistory.push(lastLoss);
         }
 
@@ -1817,15 +2166,86 @@
         appState.lastLoss = lastLoss;
         appState.lastAccuracy = lastAcc;
         appState.lastTrainMs = performance.now() - t0;
+        appState.lastTrainStopped = stopped;
 
         updateStatsUI();
         drawLossChart();
         drawTernaryMatrix();
+        if (stopped) showToast(`Обучение остановлено (${Math.round(100 * done / totalSteps)}%) — сеть сохранила то, что успела выучить`);
+        return true;
+      } catch (err) {
+        console.error(err);
+        showToast("Ошибка обучения: " + (err && err.message ? err.message : err));
+        return false;
       } finally {
         appState.training = false;
-        if (badge) badge.textContent = "Готов";
+        appState.cancelRequested = false;
+        hideTrainProgress();
       }
-      return true;
+    }
+
+    // Загрузка файла субтитров: чтение потоком → выборка диалогов → дообучение
+    async function loadSubtitleFile(file) {
+      if (appState.training) {
+        showToast("Обучение уже идёт — подождите или нажмите «Остановить»");
+        return false;
+      }
+      appState.training = true;
+      appState.cancelRequested = false;
+      let result = null;
+      const t0 = performance.now();
+      try {
+        setTrainProgress(`Чтение файла «${file.name}»`, 0, formatBytes(file.size));
+        result = await readCorpusFileStreaming(file, {
+          maxChains: BROWSER_LIMITS.maxFileChains,
+          maxChainWords: BROWSER_LIMITS.maxChainWords,
+          isCancelled: () => appState.cancelRequested,
+          onProgress: (frac, info) => {
+            const elapsed = performance.now() - t0;
+            const eta = frac > 0.01 ? elapsed / frac * (1 - frac) : 0;
+            setTrainProgress(`Чтение файла «${file.name}»`, frac,
+              `${formatBytes(Math.round(frac * file.size))} из ${formatBytes(file.size)} · ` +
+              `${info.chains.toLocaleString("ru-RU")} диалогов` + (eta ? ` · осталось ~${formatDuration(eta)}` : ""));
+          }
+        });
+      } catch (err) {
+        console.error(err);
+        showToast("Не удалось прочитать файл: " + (err && err.message ? err.message : err));
+        result = null;
+      } finally {
+        appState.training = false;
+        hideTrainProgress();
+      }
+      if (!result) {
+        if (appState.cancelRequested) showToast("Загрузка файла отменена");
+        appState.cancelRequested = false;
+        return false;
+      }
+      appState.cancelRequested = false;
+      if (result.chains.length === 0) {
+        showToast(`В файле ${file.name} не найдено ни одной фразы`);
+        return false;
+      }
+
+      appState.corpusText = appState.corpusText.trim() + "\n" + result.chains.join("\n");
+      const area = document.getElementById("corpusTextarea");
+      if (area) area.value = appState.corpusText;
+      const stored = saveCorpusToStorage(appState.corpusText);
+      const sampled = result.totalChains > result.chains.length;
+      showTrainNote(
+        `Файл «${file.name}»: ${formatBytes(result.bytes)}, ${result.lines.toLocaleString("ru-RU")} строк, ` +
+        `кодировка ${result.encoding}, найдено ${result.totalChains.toLocaleString("ru-RU")} диалогов. ` +
+        (sampled
+          ? `Для обучения в браузере взята случайная выборка ${result.chains.length.toLocaleString("ru-RU")} диалогов по всему файлу — ` +
+            `телефон не потянет больше. Обучить настоящую модель на всём файле: train_lm.py на компьютере.`
+          : `Все диалоги добавлены в корпус.`) +
+        (stored ? "" : " Корпус слишком большой для памяти браузера — после перезагрузки страницы он не сохранится.")
+      );
+      const ok = await trainEngineFromCorpus(appState.corpusText, 3);
+      if (ok && !appState.lastTrainStopped) {
+        showToast(`Загружено ${result.chains.length} диалогов из файла ${file.name}!`);
+      }
+      return ok;
     }
 
     function updateStatsUI() {
@@ -1962,7 +2382,7 @@
         appState.corpusText = appState.corpusText.trim() + "\n" + qPart + " " + aPart;
         const area = document.getElementById("corpusTextarea");
         if (area) area.value = appState.corpusText;
-        try { localStorage.setItem("slr_net_mobile_corpus", appState.corpusText); } catch (e) {}
+        saveCorpusToStorage(appState.corpusText);
         appState.pendingUnknownQuestion = null;
         trainEngineFromCorpus(appState.corpusText, 2).then(ok => {
           if (!ok) return;
@@ -2172,9 +2592,7 @@
         appState.corpusText = appState.corpusText.trim() + "\n" + val;
         corpusTextarea.value = appState.corpusText;
         inp.value = "";
-        try {
-          localStorage.setItem("slr_net_mobile_corpus", appState.corpusText);
-        } catch (e) {}
+        saveCorpusToStorage(appState.corpusText);
 
         const epochs = parseInt(document.getElementById("epochsSelect").value, 10) || 20;
         trainEngineFromCorpus(appState.corpusText, epochs).then(ok => ok && showToast("Новое знание вшито в троичные веса и память!"));
@@ -2188,9 +2606,7 @@
           return;
         }
         appState.corpusText = raw;
-        try {
-          localStorage.setItem("slr_net_mobile_corpus", raw);
-        } catch (e) {}
+        saveCorpusToStorage(raw);
 
         const epochs = parseInt(document.getElementById("epochsSelect").value, 10) || 20;
         trainEngineFromCorpus(raw, epochs).then(ok => ok && showToast(`Ядро переобучено за ${(appState.lastTrainMs / 1000).toFixed(1)} с!`));
@@ -2211,25 +2627,24 @@
         drawTernaryMatrix();
       });
 
-      // Загрузка пользовательского файла .txt или .srt с субтитрами
+      // Загрузка пользовательского файла .txt или .srt с субтитрами (любого размера — читается потоком)
       const subFileInp = document.getElementById("subtitleFileInput");
       if (subFileInp) {
         subFileInp.addEventListener("change", (e) => {
           const file = e.target.files && e.target.files[0];
+          e.target.value = "";             // чтобы повторный выбор того же файла снова сработал
           if (!file) return;
-          const reader = new FileReader();
-          reader.onload = (ev) => {
-            const content = String(ev.target.result || "").trim();
-            if (!content) return;
-            const parsed = parseSubtitleOrTextCorpusJS(content);
-            appState.corpusText = appState.corpusText.trim() + "\n" + parsed.join("\n");
-            corpusTextarea.value = appState.corpusText;
-            try { localStorage.setItem("slr_net_mobile_corpus", appState.corpusText); } catch (err) {}
-            trainEngineFromCorpus(appState.corpusText, 3).then(ok => ok && showToast(`Загружено ${parsed.length} диалогов из файла ${file.name}!`));
-          };
-          reader.readAsText(file, "utf-8");
+          loadSubtitleFile(file);
         });
       }
+
+      // Остановка чтения файла или обучения
+      document.getElementById("trainCancelBtn").addEventListener("click", () => {
+        if (!appState.training) return;
+        appState.cancelRequested = true;
+        showToast("Останавливаю…");
+      });
+      document.getElementById("globalProgress").addEventListener("click", () => switchTab("train"));
 
       // Экспорт дампа троичных весов в буфер обмена
       document.getElementById("exportWeightsBtn").addEventListener("click", () => {

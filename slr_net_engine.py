@@ -140,6 +140,14 @@ PRESETS: Dict[str, Dict[str, object]] = {
         n_decoder_layers=2, decoder_attn_every=2, n_heads=4, n_kv_heads=2,
         window_size=64, max_latent_steps=3, memory_keys=32, memory_key_dim=64, memory_top_k=4,
     ),
+    # «mini» — то, что реально обучить на обычном CPU за несколько часов (так обучены веса
+    # slr_net_subtitles_ru_mini.npz на русских субтитрах; словарь 8192 — меньше считать на выходе)
+    "mini": dict(
+        vocab_size=8192, d_model=320, d_state=32, ssm_headdim=64, ssm_chunk=32,
+        n_encoder_layers=6, encoder_attn_every=3, n_reasoning_layers=2,
+        n_decoder_layers=3, decoder_attn_every=3, n_heads=5, n_kv_heads=1,
+        window_size=128, max_latent_steps=3, memory_keys=64, memory_key_dim=128, memory_top_k=4,
+    ),
     "small": dict(
         vocab_size=16384, d_model=384, d_state=64, ssm_headdim=64,
         n_encoder_layers=6, encoder_attn_every=3, n_reasoning_layers=2,
@@ -788,6 +796,39 @@ if TORCH_AVAILABLE:
                     continue
                 packed[name] = t.detach().float().cpu().numpy().astype(np.float16)
             return packed
+
+        @classmethod
+        def from_packed(cls, config: SLRNetConfig, packed: Dict[str, np.ndarray]) -> "SLRNetLanguageModel":
+            """
+            Обратная операция к export_packed(): модель из упакованных троичных весов.
+
+            Тонкость: BitLinear квантует веса заново на каждом проходе с gamma' = mean|W|. Если просто
+            записать W = trits * gamma, то gamma' = gamma * (доля ненулевых), и масштаб слоя «поплывёт».
+            Поэтому записываем W = trits * gamma / (доля ненулевых): тогда mean|W| = gamma ровно, а
+            round(W / gamma) = trits — модель считает в точности те же троичные веса, что и до экспорта.
+            """
+            model = cls(config)
+            state: Dict[str, torch.Tensor] = {}
+            for key in packed:
+                if not key.endswith(".weight.packed"):
+                    continue
+                name = key[: -len(".packed")]
+                shape = tuple(int(s) for s in packed[name + ".shape"])
+                trits = unpack_ternary_matrix(packed[key], shape).astype(np.float32)
+                gamma = float(np.asarray(packed[name + ".gamma"]).reshape(-1)[0])
+                nonzero = float(np.count_nonzero(trits)) / max(1, trits.size)
+                scale = gamma / nonzero if nonzero > 0 else 0.0
+                state[name] = torch.from_numpy(trits * scale)
+            own = model.state_dict()
+            for key, value in packed.items():
+                if key in own and key not in state:
+                    state[key] = torch.from_numpy(np.asarray(value, dtype=np.float32)).reshape(own[key].shape)
+            state["lm_head.weight"] = state["tok_embeddings.weight"]
+            missing = sorted(set(own) - set(state))
+            if missing:
+                raise ValueError(f"В упакованных весах нет параметров: {missing[:5]}{' ...' if len(missing) > 5 else ''}")
+            model.load_state_dict(state)
+            return model
 
 
 # =============================================================================

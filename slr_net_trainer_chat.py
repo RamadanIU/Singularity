@@ -153,6 +153,24 @@ def _join_dialogue(pending: List[str]) -> Optional[str]:
     return f"{q_part} {a_part}"
 
 
+MAX_DIALOGUE_LINES = 6
+_LINE_END = re.compile(r"[.?!…][\"»)]?$")
+
+
+def read_text_file(path: str) -> str:
+    """Текст файла в UTF-8 / UTF-16 (по BOM) или Windows-1251 (так сохранены многие русские .srt)."""
+    with open(path, "rb") as f:
+        data = f.read()
+    if data.startswith(b"\xef\xbb\xbf"):
+        return data[3:].decode("utf-8", errors="ignore")
+    if data.startswith((b"\xff\xfe", b"\xfe\xff")):
+        return data.decode("utf-16", errors="ignore")
+    try:
+        return data.decode("utf-8")
+    except UnicodeDecodeError:
+        return data.decode("cp1251", errors="ignore")
+
+
 def parse_subtitle_or_text_corpus(raw_text: str) -> List[str]:
     """
     Парсер `.txt` / `.srt`:
@@ -160,6 +178,7 @@ def parse_subtitle_or_text_corpus(raw_text: str) -> List[str]:
     2. Реплики через тире (`— Вопрос / — Ответ`) склеивает в пару `Вопрос ? Ответ`.
     3. Короткие одиночные строки объединяет попарно в цепочки «стимул — ответ».
     Строки, начинающиеся с `#`, — комментарии.
+    Логика совпадает с потоковым парсером мобильного чата (SubtitleStreamParserJS).
     """
     cleaned = re.sub(r"<[^>]+>", " ", raw_text)
     cleaned = re.sub(r"\[[^\]]+\]", " ", cleaned)
@@ -167,26 +186,45 @@ def parse_subtitle_or_text_corpus(raw_text: str) -> List[str]:
     filtered_lines: List[str] = []
     pending: List[str] = []
 
-    for line in cleaned.splitlines():
-        s = line.strip()
-        if not s or s.startswith("#"):
+    def flush_pending() -> None:
+        if len(pending) >= 2:
             joined = _join_dialogue(pending)
             if joined:
                 filtered_lines.append(joined)
-            pending = []
+        elif pending:
+            # Одиночная реплика с тире раньше молча терялась — теперь идёт как обычная строка
+            single = pending[0].lstrip("—- ").strip()
+            if single:
+                filtered_lines.append(single)
+        pending.clear()
+
+    for line in cleaned.splitlines():
+        s = re.sub(r"\s+", " ", line).strip()
+        if not s or s.startswith("#"):
+            flush_pending()
             continue
         if re.fullmatch(r"\d+", s):
             continue
         if "-->" in s or re.match(r"^\d{2}:\d{2}:\d{2}", s):
             continue
-        if s.startswith("—") or s.startswith("- ") or pending:
+        is_dash = s.startswith("—") or s.startswith("- ")
+        if pending and not is_dash:
+            # Строка без тире продолжает реплику, только если предыдущая не закончена знаком препинания.
+            # Раньше в тексте без пустых строк после первой реплики с тире ВЕСЬ остаток файла
+            # склеивался в одну бесконечную «реплику».
+            if _LINE_END.search(pending[-1]) or len(pending) >= MAX_DIALOGUE_LINES:
+                flush_pending()
+            else:
+                pending.append(s)
+                continue
+        if is_dash:
+            if len(pending) >= MAX_DIALOGUE_LINES:
+                flush_pending()
             pending.append(s)
             continue
         filtered_lines.append(s)
 
-    joined = _join_dialogue(pending)
-    if joined:
-        filtered_lines.append(joined)
+    flush_pending()
 
     final_chains: List[str] = []
     i = 0
@@ -205,7 +243,7 @@ def parse_subtitle_or_text_corpus(raw_text: str) -> List[str]:
             final_chains.append(f"{cur} {nxt}")
             i += 2
         else:
-            if len(cur.split()) >= 5:
+            if len(cur.split()) >= 4:     # как в мобильном чате
                 final_chains.append(cur)
             i += 1
 
@@ -1300,8 +1338,7 @@ def interactive_chat_loop(
         if low.startswith("/обучить "):
             custom_path = user_input[9:].strip().strip('"').strip("'")
             if os.path.exists(custom_path):
-                with open(custom_path, "r", encoding="utf-8", errors="ignore") as f:
-                    corpus_text = corpus_text.strip() + "\n" + f.read()
+                corpus_text = corpus_text.strip() + "\n" + read_text_file(custom_path)
                 engine, tokenizer = train_model_on_corpus(
                     corpus_text, d_model=engine.d_model, epochs=6, save_path=save_path, copy_bias=engine.copy_bias)
                 print("SLR-Net: Отлично! Я прочитал новый файл и обновил свои троичные веса!")
@@ -1358,8 +1395,7 @@ def main() -> None:
     corpus_text, loaded_corpus_path = "", ""
     for p in candidate_paths:
         if p and os.path.exists(p):
-            with open(p, "r", encoding="utf-8", errors="ignore") as f:
-                corpus_text = f.read()
+            corpus_text = read_text_file(p)
             loaded_corpus_path = p
             break
 

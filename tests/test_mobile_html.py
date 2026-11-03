@@ -5,6 +5,7 @@
 Запуск: pip install playwright && playwright install chromium
 """
 import os
+import sys
 
 import pytest
 
@@ -14,23 +15,42 @@ HTML = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))),
 
 
 @pytest.fixture(scope="module")
-def page():
+def browser():
     with sync_api.sync_playwright() as p:
         try:
             # CHROMIUM_PATH — путь к уже установленному Chrome/Chromium, если не ставили его через playwright
             path = os.environ.get("CHROMIUM_PATH")
-            browser = p.chromium.launch(executable_path=path) if path else p.chromium.launch()
+            br = p.chromium.launch(executable_path=path) if path else p.chromium.launch()
         except Exception as exc:  # браузер не установлен
             pytest.skip(f"Chromium недоступен: {exc}")
-        pg = browser.new_page()
-        errors = []
-        pg.on("pageerror", lambda e: errors.append(str(e)))
-        pg.route("http*://**", lambda route: route.abort())       # офлайн-режим
-        pg.goto("file://" + HTML)
-        pg.wait_for_function("() => appState && appState.engine !== null", timeout=60000)
-        pg.errors = errors
-        yield pg
-        browser.close()
+        yield br
+        br.close()
+
+
+def _open_page(browser):
+    pg = browser.new_page()
+    errors = []
+    pg.on("pageerror", lambda e: errors.append(str(e)))
+    pg.route("http*://**", lambda route: route.abort())       # офлайн-режим
+    pg.goto("file://" + HTML)
+    pg.wait_for_function("() => appState && appState.engine !== null && !appState.training", timeout=60000)
+    pg.errors = errors
+    return pg
+
+
+@pytest.fixture(scope="module")
+def page(browser):
+    pg = _open_page(browser)
+    yield pg
+    pg.close()
+
+
+@pytest.fixture()
+def fresh_page(browser):
+    """Отдельная страница: тесты загрузки файлов меняют корпус и не должны влиять на остальные."""
+    pg = _open_page(browser)
+    yield pg
+    pg.close()
 
 
 def test_page_loads_offline_without_js_errors(page):
@@ -135,3 +155,118 @@ def test_xray_mode_is_safe_from_html_injection(page):
     page.wait_for_timeout(100)
     assert result == [True, True]
     assert page.evaluate("window.__pwned === undefined")
+
+
+# ---------------------------------------------------------------------------------------------
+# Большие файлы субтитров: раньше файл на сотни МБ читался целиком, разбирался одним синхронным
+# куском, вставлялся в textarea — страница «замерзала» без прогресс-бара и падала.
+# ---------------------------------------------------------------------------------------------
+
+# Текст как в больших дампах субтитров: реплики через тире и БЕЗ пустых строк между ними
+DIALOGUE_NO_BLANK_LINES = """- А вы выбрали жаркий денек, мистер.
+- Я всегда так делаю.
+- Полный бак?
+- Еще бы!
+А у вас мощная тачка, как я погляжу.
+- Могу продать ее вам.
+- Нет, спасибо!
+Вы знаете, не проживает тут поблизости парень по имени Кэмерон?
+Бэн Кэмерон?
+Конечно!
+- Ты куда
+идёшь так поздно?
+- Домой.
+"""
+
+SRT_SAMPLE = """1
+00:00:01,000 --> 00:00:02,500
+<i>- Привет, как дела?</i>
+- Отлично, спасибо.
+
+2
+00:00:03,000 --> 00:00:04,000
+[музыка] Куда ты идёшь сегодня вечером?
+
+3
+00:00:05,000 --> 00:00:06,000
+В кино, на новый фильм.
+
+"""
+
+
+def test_stream_parser_matches_python_and_does_not_glue_whole_file(page):
+    sys.path.insert(0, os.path.dirname(HTML))
+    import slr_net_trainer_chat as T
+    for text in (DIALOGUE_NO_BLANK_LINES * 40, SRT_SAMPLE * 5):
+        js = page.evaluate("t => parseSubtitleOrTextCorpusJS(t)", text)
+        assert js == T.parse_subtitle_or_text_corpus(text)
+    chains = page.evaluate("t => parseSubtitleOrTextCorpusJS(t)", DIALOGUE_NO_BLANK_LINES * 40)
+    # Раньше после первой реплики с тире весь остаток текста склеивался в одну «реплику»
+    assert len(chains) >= 150 and max(len(c) for c in chains) < 200
+    srt = page.evaluate("t => parseSubtitleOrTextCorpusJS(t)", SRT_SAMPLE)
+    assert srt[0] == "Привет, как дела? Отлично, спасибо."
+    assert not any("-->" in c or "<i>" in c or "музыка" in c for c in srt)
+
+
+def _start_heartbeat(pg):
+    pg.evaluate("""() => {
+        window.__maxGap = 0; window.__last = performance.now();
+        window.__beat = setInterval(() => {
+            const n = performance.now();
+            window.__maxGap = Math.max(window.__maxGap, n - window.__last);
+            window.__last = n;
+        }, 20);
+    }""")
+
+
+def test_large_file_is_streamed_with_progress_and_page_stays_responsive(fresh_page, tmp_path):
+    pg = fresh_page
+    big = tmp_path / "big_subtitles.txt"
+    with open(big, "w", encoding="utf-8") as f:
+        for i in range(25000):     # ~13 МБ, без пустых строк
+            f.write(DIALOGUE_NO_BLANK_LINES.replace("Кэмерон", f"Кэмерон-{i % 997}"))
+    pg.evaluate("() => { BROWSER_LIMITS.maxFileChains = 80; }")   # чтобы тест обучался быстро
+    _start_heartbeat(pg)
+    pg.click("#navTabTrain")
+    pg.set_input_files("#subtitleFileInput", str(big))
+    # Прогресс появляется сразу, а не после многоминутной «заморозки»
+    pg.wait_for_function("() => !document.getElementById('trainProgressBox').classList.contains('hidden')"
+                         " && document.getElementById('trainProgressPhase').textContent.includes('Чтение файла')",
+                         timeout=5000)
+    pg.wait_for_function("() => !appState.training && document.getElementById('trainProgressBox').classList.contains('hidden')",
+                         timeout=240000)
+    gap, note, n_mem, n_starter, text_len = pg.evaluate("""() => [window.__maxGap,
+        document.getElementById('trainResultNote').textContent, appState.engine.questionPrompts.length,
+        starterChainCount(), document.getElementById('corpusTextarea').value.length]""")
+    assert pg.errors == []
+    assert gap < 2000, f"главный поток был занят {gap:.0f} мс подряд"
+    assert "случайная выборка 80" in note and "кодировка utf-8" in note
+    assert n_mem <= n_starter + 80                # стартовый корпус + выборка, а не все 75 000 диалогов
+    assert text_len < 100000                      # в поле ввода — выборка, а не 13 МБ текста
+    reply = pg.evaluate("() => appState.engine.generateReply('В чём метод Шерлока Холмса?', appState.tokenizer).replyText")
+    assert "дедукц" in reply.lower()              # стартовые знания при этом не потерялись
+
+
+def test_cp1251_subtitles_are_decoded(fresh_page, tmp_path):
+    pg = fresh_page
+    srt = tmp_path / "old_windows.srt"
+    srt.write_bytes(SRT_SAMPLE.encode("cp1251"))
+    pg.click("#navTabTrain")
+    pg.set_input_files("#subtitleFileInput", str(srt))
+    pg.wait_for_function("() => document.getElementById('trainResultNote').textContent.includes('old_windows.srt')"
+                         " && !appState.training", timeout=60000)
+    corpus, note = pg.evaluate("() => [appState.corpusText, document.getElementById('trainResultNote').textContent]")
+    assert "Привет, как дела? Отлично, спасибо." in corpus
+    assert "windows-1251" in note
+
+
+def test_cancel_button_stops_long_training(fresh_page):
+    pg = fresh_page
+    pg.click("#navTabTrain")
+    pg.evaluate("() => { window.__done = null; trainEngineFromCorpus(appState.corpusText, 500).then(ok => window.__done = ok); }")
+    pg.wait_for_function("() => document.getElementById('trainProgressPhase').textContent.startsWith('Обучение')",
+                         timeout=30000)
+    pg.click("#trainCancelBtn")
+    pg.wait_for_function("() => window.__done !== null", timeout=15000)
+    assert pg.evaluate("() => [window.__done, appState.lastTrainStopped, appState.training]") == [True, True, False]
+    assert pg.evaluate("() => document.getElementById('globalProgress').classList.contains('hidden')")
