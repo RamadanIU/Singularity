@@ -90,3 +90,42 @@ def test_tokenizer_proto_roundtrip(tmp_path):
     b = train_lm.Tokenizer(model_proto=Path(tmp_path / "tok.model").read_bytes())
     s = "мама читала книгу\nкошка"
     assert a.encode(s) == b.encode(s) and b.decode(b.encode(s)) == s
+
+
+SHIPPED = Path(ROOT) / "slr_net_subtitles_ru_mini.npz"
+DIALOGUE = ("- Привет! Как дела?\n- Хорошо, спасибо. А у тебя?\n- Тоже неплохо. Куда ты идёшь?\n"
+            "- Домой, уже поздно.\n- Давай я тебя провожу.\n- Не надо, я сама дойду.\n")
+
+
+@pytest.mark.skipif(not SHIPPED.exists(), reason="нет файла обученных весов")
+def test_shipped_subtitles_model_really_learned():
+    """Веса из репозитория обучены: обычный диалог предсказывают намного лучше случайных весов
+    и того же набора слов в случайном порядке (то есть выучили не только частоты, но и порядок слов)."""
+    torch = pytest.importorskip("torch")
+    pytest.importorskip("sentencepiece")
+    import random
+    import torch.nn.functional as F
+    import slr_net_engine as E
+
+    model, tok = train_lm.load_model(str(SHIPPED), torch.device("cpu"))
+
+    def loss(m, text):
+        ids = torch.tensor([tok.encode(text)])
+        with torch.no_grad():
+            logits, _, _ = m(ids[:, :-1], routing="threshold")
+        return F.cross_entropy(logits[0], ids[0, 1:]).item()
+
+    words = DIALOGUE.split()
+    random.Random(0).shuffle(words)
+    torch.manual_seed(0)
+    untrained = E.SLRNetLanguageModel(model.config).eval()
+
+    natural = loss(model, DIALOGUE)
+    assert natural < 4.0                                   # на отложенных субтитрах ≈ 3.5
+    assert loss(model, " ".join(words)) > natural + 2.0    # перемешанные слова — «не по-русски»
+    assert loss(untrained, DIALOGUE) > 8.0                 # случайные веса: ≈ ln 8192 = 9.0
+
+    torch.manual_seed(0)
+    text = train_lm.sample_text(model, tok, "Привет! Как дела?", 30, 0.8, 50, 0.95, 1.1, torch.device("cpu"))
+    letters = [c for c in text if c.isalpha()]
+    assert len(letters) > 20 and sum("а" <= c.lower() <= "я" or c.lower() == "ё" for c in letters) > 0.9 * len(letters)

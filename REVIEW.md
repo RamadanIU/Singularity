@@ -281,7 +281,7 @@
 ```bash
 pip install -r requirements.txt
 python slr_net_engine.py                  # самопроверка: размеры, градиенты, каузальность
-python -m pytest -q tests/                # ⟨TODO:py⟩ проверок (+⟨TODO:br⟩ браузерных при установленном playwright)
+python -m pytest -q tests/                # 51 проверка (+16 браузерных при установленном playwright)
 python slr_net_trainer_chat.py --load slr_net_trained.npz --no-chat   # демо + честная метрика сети
 git diff $(git rev-list --max-parents=0 HEAD) -- slr_net_engine.py   # изменения относительно присланной версии
 ```
