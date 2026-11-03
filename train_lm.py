@@ -4,7 +4,7 @@
 Обучение настоящей языковой модели SLR-Net на больших текстах (PyTorch).
 =======================================================================
 
-Четыре команды:
+Пять команд:
 
   1) Подготовка данных: обучает субсловный токенизатор (SentencePiece Unigram) и переводит
      все тексты в компактный бинарный файл токенов (uint16, читается через memmap — подходит
@@ -18,8 +18,13 @@
   3) Генерация текста:
        python train_lm.py sample --ckpt runs/small/best.pt --prompt "Почему небо синее?"
 
-  4) Экспорт троичных весов (5 тритов в байт) и отчёт о размере:
+  4) Проверка, что модель действительно обучилась (против случайных весов и частотной модели):
+       python train_lm.py eval --ckpt runs/small/best.pt --data data
+
+  5) Экспорт троичных весов (5 тритов в байт, токенизатор внутри) и отчёт о размере:
        python train_lm.py export --ckpt runs/small/best.pt --out runs/small/model_packed.npz
+     Упакованный файл тоже подходит для sample и eval:
+       python train_lm.py sample --ckpt runs/small/model_packed.npz --prompt "Привет!"
 
 Зависимости: torch, numpy, sentencepiece  (pip install -r requirements.txt)
 """
@@ -692,7 +697,7 @@ def main(argv: Optional[List[str]] = None) -> None:
     t.add_argument("--sample-prompt", default="Привет! Как дела?")
     t.add_argument("--device", default="auto")
     t.add_argument("--dtype", default="auto", choices=["auto", "bf16", "fp32"])
-    t.add_argument("--compile", action="store_true", help="torch.compile (быстрее на GPU)")
+    t.add_argument("--compile", action="store_true", help="torch.compile (быстрее и на GPU, и на CPU: ~1.7x)")
     t.add_argument("--resume", default=None, help="продолжить с чекпоинта")
     t.add_argument("--seed", type=int, default=1337)
 
