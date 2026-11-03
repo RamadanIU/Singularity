@@ -510,9 +510,9 @@ def test_chat_mode_keeps_dialogue_and_can_start_over(chat_page):
                              timeout=60000)
         return pg.evaluate("() => [...document.querySelectorAll('[data-mini-reply] .mini-reply-body')].pop().innerText")
 
-    say("Меня зовут Всеволод.")
+    say("Меня зовут Тимофей.")                                               # имени нет в обучающих данных
     reply = say("Как меня зовут?")
-    assert "Всеволод" in reply, reply                                       # помнит, что сказали раньше
+    assert "Тимофей" in reply, reply                                        # помнит, что сказали раньше
     assert len([ln for ln in reply.split("\n") if ln.strip()]) == 1         # ответ — одна реплика
     ids = pg.evaluate("() => miniState.ctxIds")
     user_id, bot_id, nl = pg.evaluate("() => [miniState.bundle.chat.userId, miniState.bundle.chat.botId, miniState.bundle.tokenizer.nlId]")

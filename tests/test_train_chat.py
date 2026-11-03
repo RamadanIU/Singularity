@@ -15,6 +15,7 @@ import train_chat as T  # noqa: E402
 
 BASE_NPZ = os.path.join(ROOT, "slr_net_subtitles_ru_mini.npz")
 CHAT_NPZ = os.path.join(ROOT, "slr_net_chat_ru_mini.npz")
+MIN_SHIPPED_OK = 7          # из 10 (см. test_shipped_chat_model_really_answers)
 
 torch = pytest.importorskip("torch")
 pytest.importorskip("sentencepiece")
@@ -210,21 +211,27 @@ def test_shipped_chat_model_really_answers(tok):
     """Готовая чат-модель из репозитория отвечает по смыслу на вопросы, которых не было в обучении."""
     model, ctok, chat = T.load_chat_model(CHAT_NPZ, torch.device("cpu"))
     assert chat
-    probes = [
+    probes = [                                     # 10 вопросов разной трудности, заданы заранее
+        ([("user", "Меня зовут Тимофей."), ("bot", "Приятно познакомиться, Тимофей!"), ("user", "Как меня зовут?")],
+         ["Тимофей"]),                             # имени нет в обучении
         ([("user", "Здравствуй, меня зовут Всеволод."), ("bot", "Приятно познакомиться, Всеволод!"),
-          ("user", "Скажи моё имя.")], ["Всеволод"]),
+          ("user", "Скажи моё имя.")], ["Всеволод"]),  # трудное: редкое имя + новая формулировка
         ([("user", "Я живу в Костроме."), ("bot", "Кострома — хороший город!"), ("user", "Напомни, где я живу.")],
-         ["Костроме", "Кострома"]),
+         ["Костроме", "Кострома"]),                # трудное: город и формулировка не из обучения
+        ([("user", "Я живу в Казани."), ("bot", "Казань — хороший город!"), ("user", "Где я живу?")], ["Казани"]),
         ([("user", "Ты кто такой?")], ["slr-net", "модель", "нейросеть"]),
         ([("user", "Какая столица Японии?")], ["Токио"]),
         ([("user", "Hello!")], ["русск"]),
+        ([("user", "Сколько будет 2 + 3?")], ["5", "пять"]),
+        ([("user", "Какой день идёт после пятницы?")], ["суббота"]),
+        ([("user", "Какая сегодня погода?")], ["не знаю"]),
     ]
     ok = 0
     for turns, keys in probes:
         reply = T.answer(model, ctok, True, turns)
         ok += bool(T.check_reply(reply, {"any": keys}))
-    assert ok >= 4
+    assert ok >= MIN_SHIPPED_OK, ok
     # базовая модель (до пост-тренинга) с теми же вопросами справляется хуже
     base, btok, _ = T.load_chat_model(BASE_NPZ, torch.device("cpu"))
     base_ok = sum(bool(T.check_reply(T.answer(base, btok, False, t), {"any": k})) for t, k in probes)
-    assert ok > base_ok
+    assert base_ok <= 2 and ok >= base_ok + 5, (ok, base_ok)

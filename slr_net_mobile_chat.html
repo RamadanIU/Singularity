@@ -3711,8 +3711,8 @@
       let last = performance.now();
       for (let n = 0; n < MINI_LIMITS.chatMaxNewTokens && !miniState.cancelRequested; n++) {
         const next = SLRMini.sampleToken(miniState.logits, {
-          context: miniState.ctxIds.slice(-MINI_LIMITS.context),
-          banned: n === 0 ? [...banned, tok.nlId] : banned,             // пустых ответов не бывает
+          context: out,                                                 // штраф за повтор — только внутри ответа:
+          banned: n === 0 ? [...banned, tok.nlId] : banned,             // имя собеседника повторять можно; пустых ответов нет
           temperature: miniState.temperature,
           topK: 40,
           topP: 0.9,

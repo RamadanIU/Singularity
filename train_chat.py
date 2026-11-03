@@ -254,7 +254,8 @@ def generate_batch(model, tok: ChatTokenizer, ctxs: Sequence[List[int]], n: int 
     """
     По n ответов на каждый из контекстов ctxs ОДИНАКОВОЙ длины — одним батчем (len(ctxs) * n строк).
     Остановка на <n> (конец реплики). Ролевые и служебные токены запрещены, пустая реплика тоже.
-    temperature <= 0 — жадный выбор.
+    temperature <= 0 — жадный выбор. Штраф за повтор действует только на токены самого ответа: иначе он
+    мешал бы повторить то, что сказал собеседник («Меня зовут Всеволод» → «Тебя зовут Всена»).
 
     guidance > 0 — «удержание темы» (classifier-free guidance для текста): второй поток считает
     ответ без последнего вопроса (unconds, тоже одинаковой длины), и итоговые логиты
@@ -279,7 +280,8 @@ def generate_batch(model, tok: ChatTokenizer, ctxs: Sequence[List[int]], n: int 
                 logits = model.step(ids[:, t], cache)
             return cache, logits, ids
 
-        cache, logits, history = prefill(ctxs)
+        cache, logits, _ = prefill(ctxs)
+        history = torch.zeros(B, 0, dtype=torch.long, device=dev)     # уже написанные токены ответа
         use_g = guidance > 0 and unconds is not None and len(unconds[0]) > 0
         if use_g:
             if len({len(u) for u in unconds}) != 1:
@@ -292,7 +294,7 @@ def generate_batch(model, tok: ChatTokenizer, ctxs: Sequence[List[int]], n: int 
             lg = logits.float()
             if use_g:
                 lg = lg + guidance * (lg - ulogits.float())
-            if repetition_penalty != 1.0:
+            if repetition_penalty != 1.0 and history.shape[1]:
                 seen = torch.gather(lg, 1, history)
                 seen = torch.where(seen > 0, seen / repetition_penalty, seen * repetition_penalty)
                 lg = lg.scatter(1, history, seen)
@@ -744,12 +746,13 @@ def check_reply(text: str, check: Optional[dict]) -> Optional[bool]:
 
 
 class AlignItem:
-    __slots__ = ("context", "reply", "check", "kind", "negatives", "positives")
+    __slots__ = ("context", "reply", "check", "kind", "negatives", "positives", "sample_context")
 
     def __init__(self, context, reply, check, kind):
         self.context, self.reply, self.check, self.kind = context, reply, check, kind
         self.negatives: List[str] = []
         self.positives: List[str] = []
+        self.sample_context = context        # на каком варианте вопроса модель отвечала сама
 
 
 def align_items(rows: List[dict]) -> List[AlignItem]:
@@ -763,7 +766,7 @@ def align_items(rows: List[dict]) -> List[AlignItem]:
 
 
 def collect_own_samples(model, tok, items: List[AlignItem], k: int, max_new: int, temperature: float,
-                        seed: int, log_every: int = 200, max_batch: int = 64) -> Dict[str, float]:
+                        seed: int, log_every: int = 200, max_batch: int = 64, perturb: float = 0.0) -> Dict[str, float]:
     """
     Раунд «модель отвечает сама»: k ответов на каждый вопрос. Награда:
       • задачи с проверкой (имя, число, факт): верно/неверно;
@@ -774,9 +777,17 @@ def collect_own_samples(model, tok, items: List[AlignItem], k: int, max_new: int
     g = torch.Generator().manual_seed(seed)
     n_ok = n_check = n_bad = n_all = 0
     t0 = time.time()
+    import chat_corpus as C
+    prng = random.Random(seed)
     groups: Dict[int, List[Tuple[AlignItem, List[int]]]] = {}
     for it in items:
-        ctx = prompt_ids(tok, it.context)
+        # «Небрежный» вариант последнего вопроса (без заглавных, без знаков, «слушай, ...»): на новых
+        # формулировках модель ошибается чаще — наказание бьёт туда, где она слабее всего
+        it.sample_context = it.context
+        if perturb > 0 and it.context and prng.random() < perturb and not it.kind.endswith(C.NO_AUG_SRC):
+            last = it.context[-1]
+            it.sample_context = list(it.context[:-1]) + [(last[0], C.casual(last[1], prng))]
+        ctx = prompt_ids(tok, it.sample_context)
         groups.setdefault(len(ctx), []).append((it, ctx))
     per_batch = max(1, max_batch // k)
     done_items = 0
@@ -860,7 +871,7 @@ def cmd_align(args: argparse.Namespace) -> None:
         sample_set = sample_set[:args.sample_items]
         print(f"Раунд {rnd + 1}/{args.rounds}: модель отвечает сама на {len(sample_set)} вопросов ...", flush=True)
         st = collect_own_samples(model, tok, sample_set, args.samples, args.max_new, args.temperature,
-                                 args.seed + rnd)
+                                 args.seed + rnd, perturb=args.perturb)
         print(f"  верно на проверяемых: {st['checked_acc']:.3f} | доля плохих ответов: {st['bad_frac']:.3f}", flush=True)
         metrics.write(json.dumps({"kind": "samples", "round": rnd, **st}) + "\n")
         # Половина батча — задачи, где модель ошиблась сама (наказание за свои ошибки), половина — любые
@@ -876,14 +887,19 @@ def cmd_align(args: argparse.Namespace) -> None:
                 seqs.append(seq_for(it.context, it.reply))
                 nll_idx.append(c)
                 chosen = [c]
+                # свой плохой ответ сравнивается с правильным на том же варианте вопроса, на который отвечала модель
+                sc = it.sample_context
+                own_chosen = [c] if sc is it.context else [len(seqs)]
+                if sc is not it.context:
+                    seqs.append(seq_for(sc, it.reply))
                 # поощрение: свой верный ответ модели тоже «хороший» (rejection sampling)
                 if it.positives:
-                    seqs.append(seq_for(it.context, rng.choice(it.positives)))
-                    chosen.append(len(seqs) - 1)
+                    seqs.append(seq_for(sc, rng.choice(it.positives)))
+                    own_chosen.append(len(seqs) - 1)
                 # 1) свой плохой ответ (по награде)
                 if it.negatives:
-                    seqs.append(seq_for(it.context, rng.choice(it.negatives)))
-                    pairs.append((rng.choice(chosen), len(seqs) - 1))
+                    seqs.append(seq_for(sc, rng.choice(it.negatives)))
+                    pairs.append((rng.choice(own_chosen), len(seqs) - 1))
                 # 2) чужой ответ на этот вопрос
                 if args.mismatch:
                     other = rng.choice(replies)
@@ -906,7 +922,11 @@ def cmd_align(args: argparse.Namespace) -> None:
             ci = torch.tensor([p[0] for p in pairs], dtype=torch.long)
             ri = torch.tensor([p[1] for p in pairs], dtype=torch.long)
             margin = (pol_lp[ci] - ref_lp[ci]) - (pol_lp[ri] - ref_lp[ri])
-            pref = -F.logsigmoid(args.beta * margin).mean() if len(pairs) else pol_lp.sum() * 0
+            # Потолок отрыва: уже надёжно разведённые пары (β·отрыв > max_margin) больше не тянут модель —
+            # иначе она уходит всё дальше от SFT-модели и портит то, что уже умела (проверено: −4% точности)
+            active = (args.beta * margin.detach() < args.max_margin).float()
+            pref = (-F.logsigmoid(args.beta * margin) * active).sum() / max(1, len(pairs)) if len(pairs) \
+                else pol_lp.sum() * 0
             ni = torch.tensor(nll_idx, dtype=torch.long)
             nll = -(pol_lp[ni].sum() / cnt[ni].sum().clamp(min=1))
             loss = pref + args.nll_coef * nll
@@ -1172,19 +1192,21 @@ def main(argv: Optional[List[str]] = None) -> None:
     a.add_argument("--ckpt", required=True, help="SFT-модель")
     a.add_argument("--data", default="data/chat")
     a.add_argument("--out", default="runs/chat_align")
-    a.add_argument("--rounds", type=int, default=3)
+    a.add_argument("--rounds", type=int, default=1)
     a.add_argument("--steps-per-round", type=int, default=300)
     a.add_argument("--batch-size", type=int, default=12)
     a.add_argument("--checked-items", type=int, default=6000, help="задач с проверяемым ответом")
     a.add_argument("--open-items", type=int, default=12000, help="открытых вопросов")
-    a.add_argument("--sample-items", type=int, default=1500, help="на скольких задачах модель отвечает сама за раунд")
+    a.add_argument("--sample-items", type=int, default=3000, help="на скольких задачах модель отвечает сама за раунд")
     a.add_argument("--samples", type=int, default=4, help="своих ответов на задачу")
     a.add_argument("--temperature", type=float, default=1.0)
     a.add_argument("--max-new", type=int, default=48)
     a.add_argument("--max-len", type=int, default=160)
-    a.add_argument("--beta", type=float, default=0.2)
-    a.add_argument("--nll-coef", type=float, default=0.5)
-    a.add_argument("--lr", type=float, default=2e-4)
+    a.add_argument("--beta", type=float, default=0.1)
+    a.add_argument("--nll-coef", type=float, default=1.0)
+    a.add_argument("--max-margin", type=float, default=3.0, help="потолок β·отрыв: дальше пару не раздвигаем")
+    a.add_argument("--perturb", type=float, default=0.5, help="доля «небрежных» вариантов вопроса при своих ответах")
+    a.add_argument("--lr", type=float, default=3e-5)
     a.add_argument("--warmup", type=int, default=30)
     a.add_argument("--no-mismatch", dest="mismatch", action="store_false")
     a.add_argument("--no-context-swap", dest="context_swap", action="store_false")
