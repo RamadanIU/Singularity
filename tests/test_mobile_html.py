@@ -275,6 +275,7 @@ def test_cancel_button_stops_long_training(fresh_page):
 # ------------------------------------------------------------------ режим mini: обученная LLM в браузере
 ROOT = os.path.dirname(HTML)
 MINI_NPZ = os.path.join(ROOT, "slr_net_subtitles_ru_mini.npz")
+CHAT_NPZ = os.path.join(ROOT, "slr_net_chat_ru_mini.npz")
 MINI_DIALOGUE = ("- Привет! Как дела?\n- Хорошо, спасибо. А у тебя?\n- Тоже неплохо. Куда ты идёшь?\n"
                  "- Домой, уже поздно.\nДоктор, что с ним?\n- С ним всё будет хорошо.\n")
 MINI_STRINGS = ["Привет! Как дела?", "  много   пробелов  ", "Ёлка и ёж", "№ 5… «цитата» — тире", "Hello, world 1999!",
@@ -404,9 +405,9 @@ def test_mini_weights_are_cached_and_mode_is_remembered(browser):
 
 
 def test_mini_download_button_fetches_weights_from_server(browser):
-    """Страница, открытая с сервера (например, GitHub Pages), скачивает веса, лежащие рядом с ней."""
-    if not os.path.exists(MINI_NPZ):
-        pytest.skip("нет файла весов slr_net_subtitles_ru_mini.npz")
+    """Страница, открытая с сервера (например, GitHub Pages), скачивает веса собеседника, лежащие рядом с ней."""
+    if not os.path.exists(CHAT_NPZ):
+        pytest.skip("нет файла весов slr_net_chat_ru_mini.npz")
     import functools
     import http.server
     import threading
@@ -431,8 +432,109 @@ def test_mini_download_button_fetches_weights_from_server(browser):
         pg.click("#miniDownloadBtn")
         pg.wait_for_function("() => miniState.bundle !== null && !miniState.loading", timeout=60000)
         assert pg.evaluate("() => miniState.source") == "с сервера"
+        assert pg.evaluate("() => miniState.bundle.chat !== null")              # по умолчанию — собеседник
         assert pg.evaluate("() => [...window.__texts].some(t => t.startsWith('Скачано'))")
         assert errors == []
     finally:
         pg.close()
         srv.shutdown()
+
+
+# ------------------------------------------------------------------ mini-собеседник (train_chat.py)
+
+@pytest.fixture(scope="module")
+def chat_page(browser):
+    if not os.path.exists(CHAT_NPZ):
+        pytest.skip("нет файла весов slr_net_chat_ru_mini.npz")
+    pg = _open_page(browser)
+    pg.click("#modeMiniBtn")
+    pg.set_input_files("#miniFileInput", CHAT_NPZ)
+    pg.wait_for_function("() => miniState.bundle !== null && !miniState.loading", timeout=60000)
+    yield pg
+    pg.close()
+
+
+CHAT_PROMPTS = [
+    [("user", "Привет! Как тебя зовут?")],
+    [("user", "Меня зовут Всеволод."), ("bot", "Приятно познакомиться, Всеволод!"), ("user", "Как меня зовут?")],
+    [("user", "Какая столица Франции?")],
+    [("user", "Hello!")],
+]
+
+
+def test_chat_model_in_browser_matches_pytorch(chat_page):
+    """Жадный ответ собеседника в браузере совпадает с PyTorch токен в токен (тот же формат диалога)."""
+    torch = pytest.importorskip("torch")
+    pytest.importorskip("sentencepiece")
+    sys.path.insert(0, ROOT)
+    import train_chat
+
+    model, tok, chat = train_chat.load_chat_model(CHAT_NPZ, torch.device("cpu"))
+    assert chat
+    assert chat_page.evaluate("() => [miniState.bundle.chat.userId, miniState.bundle.chat.botId]") == [tok.user_id, tok.bot_id]
+    for turns in CHAT_PROMPTS:
+        ctx = train_chat.prompt_ids(tok, turns)
+        ref = train_chat.generate_replies(model, tok, ctx, n=1, max_new_tokens=24, temperature=0,
+                                          repetition_penalty=1.0)[0]
+        js = chat_page.evaluate("""([ctx, maxNew]) => {
+            const { model, tokenizer: tok, chat } = miniState.bundle;
+            const st = model.newState(), lg = new Float32Array(model.V);
+            for (const t of ctx) model.step(t, st, lg);
+            const banned = [tok.eosId, tok.bosId, tok.unkId, chat.userId, chat.botId], out = [];
+            for (let n = 0; n < maxNew; n++) {
+                const t = SLRMini.sampleToken(lg, { temperature: 0, repetitionPenalty: 1,
+                                                    banned: n === 0 ? [...banned, tok.nlId] : banned });
+                out.push(t);
+                if (t === tok.nlId) break;
+                model.step(t, st, lg);
+            }
+            return out;
+        }""", [ctx, 24])
+        assert js == ref, (turns, tok.decode(js), tok.decode(ref))
+
+
+def test_chat_mode_keeps_dialogue_and_can_start_over(chat_page):
+    pg = chat_page
+    assert pg.evaluate("() => !document.getElementById('miniChatPromptsBar').classList.contains('hidden')")
+    assert pg.evaluate("() => document.getElementById('miniQuickPromptsBar').classList.contains('hidden')")
+    assert pg.evaluate("() => document.getElementById('miniLinesLabel').classList.contains('hidden')")
+    assert pg.evaluate("() => document.getElementById('miniUpgradeBox').classList.contains('hidden')")
+    pg.evaluate("() => { miniResetContext(); miniState.temperature = 0; }")      # жадный выбор: ответ предсказуем
+    _start_heartbeat(pg)
+
+    def say(text):
+        n0 = pg.evaluate("() => document.querySelectorAll('[data-mini-reply] .mini-meta').length")
+        pg.fill("#chatInputField", text)
+        pg.click("#sendMsgBtn")
+        pg.wait_for_function(f"() => !miniState.busy && document.querySelectorAll('[data-mini-reply] .mini-meta').length === {n0 + 1}",
+                             timeout=60000)
+        return pg.evaluate("() => [...document.querySelectorAll('[data-mini-reply] .mini-reply-body')].pop().innerText")
+
+    say("Меня зовут Тимофей.")                                               # имени нет в обучающих данных
+    reply = say("Как меня зовут?")
+    assert "Тимофей" in reply, reply                                        # помнит, что сказали раньше
+    assert len([ln for ln in reply.split("\n") if ln.strip()]) == 1         # ответ — одна реплика
+    ids = pg.evaluate("() => miniState.ctxIds")
+    user_id, bot_id, nl = pg.evaluate("() => [miniState.bundle.chat.userId, miniState.bundle.chat.botId, miniState.bundle.tokenizer.nlId]")
+    assert ids[0] == user_id and ids.count(user_id) == 2 and ids.count(bot_id) == 2 and ids[-1] == nl
+    assert pg.evaluate("() => window.__maxGap") < 1000, "главный поток был занят слишком долго"
+
+    pg.click("#miniNewChatBtn")                                              # новый разговор: всё забыто
+    assert pg.evaluate("() => miniState.ctxIds.length") == 0
+    pg.evaluate("() => { miniState.temperature = 0.8; }")
+    assert pg.errors == []
+
+
+def test_old_subtitle_model_still_works_and_offers_upgrade(browser):
+    if not os.path.exists(MINI_NPZ):
+        pytest.skip("нет файла весов slr_net_subtitles_ru_mini.npz")
+    pg = _open_page(browser)
+    try:
+        _load_mini(pg)
+        assert pg.evaluate("() => miniState.bundle.chat") is None
+        assert pg.evaluate("() => !document.getElementById('miniUpgradeBox').classList.contains('hidden')")
+        assert pg.evaluate("() => !document.getElementById('miniQuickPromptsBar').classList.contains('hidden')")
+        assert pg.evaluate("() => document.getElementById('miniChatPromptsBar').classList.contains('hidden')")
+        assert pg.errors == []
+    finally:
+        pg.close()

@@ -372,7 +372,7 @@
             Обычная<small>поиск по памяти, логика</small>
           </button>
           <button id="modeMiniBtn" type="button" class="mode-btn" role="tab" aria-selected="false">
-            mini · LLM<small>обучена на 2.3 ГБ субтитров</small>
+            mini · LLM<small>собеседник, 12 млн параметров</small>
           </button>
         </div>
       </div>
@@ -381,12 +381,12 @@
       <div id="miniPanel" class="mini-panel hidden">
         <div id="miniLoadBox" class="space-y-2">
           <div class="leading-snug">
-            <b class="text-cyan-300">mini</b> — генеративная модель (12.3 млн параметров, обучена на 2.3 ГБ русских
-            субтитров): сама сочиняет следующую реплику, но фактов не знает. Веса (8.9 МБ) загружаются один раз
-            и сохраняются в браузере.
+            <b class="text-cyan-300">mini</b> — генеративная модель-собеседник (12.3 млн параметров): обучена на 2.3 ГБ
+            русских субтитров, а затем дообучена вести диалог. Отвечает коротко, помнит, что вы сказали в разговоре,
+            честно говорит «не знаю». Веса (8.9 МБ) загружаются один раз и сохраняются в браузере.
           </div>
           <div class="mini-row">
-            <button id="miniDownloadBtn" type="button" class="mini-btn primary">⬇ Скачать с GitHub (8.9 МБ)</button>
+            <button id="miniDownloadBtn" type="button" class="mini-btn primary">⬇ Скачать собеседника с GitHub (8.9 МБ)</button>
             <button id="miniPickBtn" type="button" class="mini-btn">📂 Выбрать файл .npz</button>
             <input id="miniFileInput" type="file" accept=".npz,application/octet-stream" class="hidden" />
           </div>
@@ -397,8 +397,12 @@
         </div>
         <div id="miniReadyBox" class="hidden space-y-1">
           <div id="miniStatusText" class="text-[11px] text-emerald-300 leading-snug">✅ mini готова</div>
+          <div id="miniUpgradeBox" class="hidden mini-row text-[11px] text-amber-200 leading-snug">
+            Загружена старая модель-продолжатель субтитров: она не отвечает на вопросы, а дописывает сцену.
+            <button id="miniUpgradeBtn" type="button" class="mini-btn primary">⬇ Скачать собеседника</button>
+          </div>
           <div class="mini-row text-[11px] text-slate-400" style="flex-wrap: nowrap">
-            <label>Реплик в ответе
+            <label id="miniLinesLabel">Реплик в ответе
               <select id="miniLinesSelect" class="mini-select">
                 <option value="1">1</option>
                 <option value="2" selected>2</option>
@@ -413,6 +417,7 @@
                 <option value="1.0">смело</option>
               </select>
             </label>
+            <button id="miniNewChatBtn" type="button" class="mini-icon-btn" title="Начать разговор заново (mini забудет, что вы говорили)" aria-label="Начать разговор заново">↺</button>
             <button id="miniForgetBtn" type="button" class="mini-icon-btn" title="Удалить сохранённые веса из памяти браузера" aria-label="Удалить веса mini из памяти браузера">✕</button>
           </div>
         </div>
@@ -466,7 +471,21 @@
           <button type="button" class="chip-btn" data-prompt="почему зимой холодно ?">❄️ Почему зимой холодно?</button>
           <button type="button" class="chip-btn" data-prompt="сколько будет два плюс два ?">🔢 2 + 2 = ?</button>
         </div>
-        <!-- Быстрые реплики для mini: модель продолжает диалог в стиле субтитров -->
+        <!-- Быстрые реплики для mini-собеседника -->
+        <div id="miniChatPromptsBar" class="chip-scroll no-scrollbar hidden">
+          <button type="button" class="chip-btn" data-prompt="Привет! Как тебя зовут?">👋 Привет! Как тебя зовут?</button>
+          <button type="button" class="chip-btn" data-prompt="Что ты умеешь?">🤖 Что ты умеешь?</button>
+          <button type="button" class="chip-btn" data-prompt="Меня зовут Аня.">🙋 Меня зовут Аня.</button>
+          <button type="button" class="chip-btn" data-prompt="Как меня зовут?">❓ Как меня зовут?</button>
+          <button type="button" class="chip-btn" data-prompt="Почему небо голубое?">🌤 Почему небо голубое?</button>
+          <button type="button" class="chip-btn" data-prompt="Какой день идёт после пятницы?">🗓 Что после пятницы?</button>
+          <button type="button" class="chip-btn" data-prompt="Какая столица Франции?">🗼 Столица Франции?</button>
+          <button type="button" class="chip-btn" data-prompt="Мне грустно.">😔 Мне грустно</button>
+          <button type="button" class="chip-btn" data-prompt="Расскажи анекдот.">😄 Расскажи анекдот</button>
+          <button type="button" class="chip-btn" data-prompt="Посоветуй фильм.">🎬 Посоветуй фильм</button>
+          <button type="button" class="chip-btn" data-prompt="Какая сегодня погода?">☔ Какая погода?</button>
+        </div>
+        <!-- Быстрые реплики для старой модели-продолжателя: она дописывает диалог в стиле субтитров -->
         <div id="miniQuickPromptsBar" class="chip-scroll no-scrollbar hidden">
           <button type="button" class="chip-btn" data-prompt="Привет! Как дела?">👋 Привет! Как дела?</button>
           <button type="button" class="chip-btn" data-prompt="Где ты был всю ночь?">🌙 Где ты был всю ночь?</button>
@@ -1016,6 +1035,7 @@
             if (bytes.length) { out += new TextDecoder().decode(new Uint8Array(bytes)); bytes = []; }
           };
           for (const id of ids) {
+            if (!(id >= 0 && id < this.vocabSize)) continue;            // ролевые токены <user>/<bot> — вне словаря
             const type = this.types[id];
             if (type === PIECE.BYTE) { bytes.push(parseInt(this.pieces[id].slice(3, 5), 16)); continue; }
             flush();
@@ -1042,6 +1062,7 @@
 
         pieceText(id) {                                                // для «Рентгена»: кусок слова как есть
           if (id === this.nlId) return "⏎";
+          if (!(id >= 0 && id < this.vocabSize)) return "";
           const type = this.types[id];
           if (type === PIECE.BYTE) return this.pieces[id];
           return this.pieces[id].replace(/\u2581/g, " ");
@@ -1445,12 +1466,23 @@
           bestVal: T.has("meta.best_val") ? Number(T.get("meta.best_val").data[0]) : null,
           params: 0
         };
+        // Чат-модель (train_chat.py export): два ролевых токена вне словаря SentencePiece.
+        // Диалог: <user> реплика <n> <bot> ответ <n> ... — ответ заканчивается переводом строки.
+        let chat = null;
+        if (T.has("meta.chat_format")) {
+          chat = {
+            format: T.get("meta.chat_format").data,
+            userId: Number(T.get("meta.user_id").data[0]),
+            botId: Number(T.get("meta.bot_id").data[0])
+          };
+          if (!(chat.userId >= tokenizer.vocabSize && chat.botId < cfg.vocab_size)) throw new Error("Повреждены ролевые токены чат-модели");
+        }
         for (const [name, t] of T) {
           if (name.endsWith(".weight.shape")) meta.params += t.data.reduce((a, b) => a * b, 1);
           else if (!name.includes(".weight.") && !name.startsWith("meta.") && name !== "config" && name !== "tokenizer_proto") meta.params += t.data.length;
         }
         onProgress(1, "Готово");
-        return { model, tokenizer, cfg, meta };
+        return { model, tokenizer, cfg, meta, chat };
       }
 
       // ------------------------------------------------------------------ выбор следующего токена
@@ -3357,11 +3389,13 @@
     }
 
     // =============================================================================================
-    //  Режим «mini»: обученная LLM из slr_net_subtitles_ru_mini.npz (движок SLRMini выше).
+    //  Режим «mini»: обученная LLM (движок SLRMini выше). По умолчанию — собеседник
+    //  slr_net_chat_ru_mini.npz (train_chat.py: дообучение диалогу). Старую модель-продолжатель
+    //  slr_net_subtitles_ru_mini.npz тоже можно загрузить файлом — тогда она дописывает сцену из фильма.
     //  Веса скачиваются один раз (GitHub или файл с телефона) и хранятся в IndexedDB браузера.
     //  Генерация идёт по токену с паузами для браузера — страница не зависает, ответ печатается.
     // =============================================================================================
-    const MINI_FILE_NAME = "slr_net_subtitles_ru_mini.npz";
+    const MINI_FILE_NAME = "slr_net_chat_ru_mini.npz";
     const MINI_WEIGHTS_URLS = [
       MINI_FILE_NAME,                                                   // рядом со страницей (сервер, GitHub Pages)
       "https://raw.githubusercontent.com/RamadanIU/Singularity/main/" + MINI_FILE_NAME
@@ -3369,7 +3403,9 @@
     const MINI_LIMITS = {
       context: 256,          // столько токенов модель видела при обучении; длиннее — оставляем последние реплики
       keepOnTrim: 96,
-      maxNewTokens: 64
+      maxNewTokens: 64,
+      chatKeepOnTrim: 160,   // собеседник: сколько последних токенов разговора оставить (целыми репликами)
+      chatMaxNewTokens: 48
     };
     const miniState = {
       bundle: null,          // { model, tokenizer, cfg, meta }
@@ -3437,7 +3473,7 @@
       if (!miniState.bundle) return "mini: обученная LLM • веса ещё не загружены";
       const p = (miniState.bundle.meta.params / 1e6).toFixed(1);
       const speed = miniState.lastSpeed ? ` • ${miniState.lastSpeed.toFixed(0)} ток/с` : "";
-      return `mini: ${p} млн параметров • веса {-1,0,+1}${speed}`;
+      return `mini${miniState.bundle.chat ? "-собеседник" : ""}: ${p} млн параметров • веса {-1,0,+1}${speed}`;
     }
 
     function updateMiniUI() {
@@ -3454,7 +3490,20 @@
       if (status && loaded) {
         const m = miniState.bundle.meta;
         const speed = miniState.lastSpeed ? ` • ${miniState.lastSpeed.toFixed(0)} ток/с` : "";
-        status.textContent = `✅ mini готова • ${(m.params / 1e6).toFixed(1)} млн параметров${m.step ? " • " + m.step.toLocaleString("ru-RU") + " шагов обучения" : ""}${speed}`;
+        status.textContent = miniState.bundle.chat
+          ? `✅ mini-собеседник готов • ${(m.params / 1e6).toFixed(1)} млн параметров${speed}`
+          : `✅ mini готова (продолжатель субтитров) • ${(m.params / 1e6).toFixed(1)} млн параметров${m.step ? " • " + m.step.toLocaleString("ru-RU") + " шагов обучения" : ""}${speed}`;
+      }
+      const chat = !loaded || !!miniState.bundle.chat;                // пока веса не загружены, ждём собеседника
+      document.getElementById("miniChatPromptsBar").classList.toggle("hidden", !mini || !chat);
+      document.getElementById("miniQuickPromptsBar").classList.toggle("hidden", !mini || chat);
+      document.getElementById("miniLinesLabel").classList.toggle("hidden", chat);
+      document.getElementById("miniNewChatBtn").classList.toggle("hidden", !chat);
+      document.getElementById("miniUpgradeBox").classList.toggle("hidden", !loaded || chat);
+      const input = document.getElementById("chatInputField");
+      if (input) {
+        input.placeholder = !mini ? "Напишите вопрос на русском..."
+          : chat ? "Напишите сообщение — mini ответит…" : "Напишите реплику — mini продолжит сцену…";
       }
       if (mini) {
         const header = document.getElementById("headerStatsText");
@@ -3521,6 +3570,7 @@
 
     async function miniDownload() {
       if (miniState.loading) return;
+      if (miniState.bundle) showToast("Скачиваю собеседника…");
       miniState.loading = true;
       updateMiniUI();
       let lastErr = null;
@@ -3599,9 +3649,6 @@
       btnRegular.setAttribute("aria-selected", String(!mini));
       btnMini.setAttribute("aria-selected", String(mini));
       document.getElementById("quickPromptsBar").classList.toggle("hidden", mini);
-      document.getElementById("miniQuickPromptsBar").classList.toggle("hidden", !mini);
-      const input = document.getElementById("chatInputField");
-      if (input) input.placeholder = mini ? "Напишите реплику — mini продолжит диалог…" : "Напишите вопрос на русском...";
       if (save) {
         try { localStorage.setItem("slr_net_model_mode", appState.modelMode); } catch (e) { /* песочница */ }
       }
@@ -3635,14 +3682,61 @@
       }
     }
 
-    function miniTrimTail(ids, keep, nlId) {
+    function miniTrimTail(ids, keep, nlId, userId = -1) {
       let tail = ids.slice(-keep);
+      if (userId >= 0) {                                              // собеседник: начинаем с реплики пользователя
+        const firstUser = tail.indexOf(userId);
+        return firstUser >= 0 ? tail.slice(firstUser) : [];
+      }
       const firstNl = tail.indexOf(nlId);
       if (firstNl >= 0 && firstNl < tail.length - 1) tail = tail.slice(firstNl + 1);   // начинаем с целой реплики
       return tail;
     }
 
+    // Собеседник: <user> реплика <n> <bot> -> модель пишет ответ до <n>. Ответ остаётся в контексте,
+    // поэтому модель помнит разговор (например, имя, которое вы назвали).
+    async function miniGenerateChatReply(userText, onUpdate) {
+      const { model, tokenizer: tok, chat } = miniState.bundle;
+      const userIds = [chat.userId, ...tok.encode(userText.replace(/\s*\n\s*/g, " ")), tok.nlId, chat.botId];
+      if (miniState.ctxIds.length + userIds.length + MINI_LIMITS.chatMaxNewTokens > MINI_LIMITS.context) {
+        const tail = miniTrimTail(miniState.ctxIds, MINI_LIMITS.chatKeepOnTrim, tok.nlId, chat.userId);
+        miniResetContext();
+        await miniFeed(tail);
+      }
+      const t0 = performance.now();
+      const ctxBefore = miniState.ctxIds.length;
+      await miniFeed(userIds);
+      const out = [], depths = [];
+      const banned = [tok.eosId, tok.bosId, tok.unkId, chat.userId, chat.botId];
+      let last = performance.now();
+      for (let n = 0; n < MINI_LIMITS.chatMaxNewTokens && !miniState.cancelRequested; n++) {
+        const next = SLRMini.sampleToken(miniState.logits, {
+          context: out,                                                 // штраф за повтор — только внутри ответа:
+          banned: n === 0 ? [...banned, tok.nlId] : banned,             // имя собеседника повторять можно; пустых ответов нет
+          temperature: miniState.temperature,
+          topK: 40,
+          topP: 0.9,
+          repetitionPenalty: 1.1,
+          rng: miniState.rng
+        });
+        out.push(next);
+        depths.push(model.step(next, miniState.ctx, miniState.logits));
+        miniState.ctxIds.push(next);
+        if (next === tok.nlId) break;                                   // ответ закончен
+        onUpdate(out, depths);
+        if (performance.now() - last > 30) {
+          await yieldToBrowser();
+          last = performance.now();
+        }
+      }
+      if (!out.length || out[out.length - 1] !== tok.nlId) await miniFeed([tok.nlId]);   // закрываем реплику
+      const ms = performance.now() - t0;
+      const processed = miniState.ctxIds.length - ctxBefore;
+      return { ids: out, depths, ms, tokPerSec: processed / Math.max(ms / 1000, 1e-3), stopped: miniState.cancelRequested };
+    }
+
     async function miniGenerateReply(userText, onUpdate) {
+      if (miniState.bundle.chat) return miniGenerateChatReply(userText, onUpdate);
       const { model, tokenizer: tok } = miniState.bundle;
       const userIds = tok.encode(userText.replace(/\s*\n\s*/g, " "));
       userIds.push(tok.nlId);
@@ -3760,7 +3854,7 @@
           meta.className = "mini-meta pt-2 border-t border-slate-800/90 flex flex-wrap items-center justify-between gap-2 text-[11px] mono text-slate-400";
           const a = document.createElement("span");
           a.className = "text-cyan-300";
-          a.textContent = `🎬 mini • ${gen} ток.${res.stopped ? " • остановлено" : ""}`;
+          a.textContent = `${miniState.bundle.chat ? "💬" : "🎬"} mini • ${gen} ток.${res.stopped ? " • остановлено" : ""}`;
           const b = document.createElement("span");
           b.className = "text-violet-300";
           b.textContent = `🧠 ${thought.toFixed(1)} шага ядра/токен`;
@@ -3824,9 +3918,17 @@
       document.getElementById("miniTempSelect").addEventListener("change", (e) => {
         miniState.temperature = Number(e.target.value) || 0.8;
       });
-      document.getElementById("miniQuickPromptsBar").addEventListener("click", (e) => {
-        const btn = e.target.closest("[data-prompt]");
-        if (btn) handleUserPrompt(btn.getAttribute("data-prompt"));
+      for (const id of ["miniQuickPromptsBar", "miniChatPromptsBar"]) {
+        document.getElementById(id).addEventListener("click", (e) => {
+          const btn = e.target.closest("[data-prompt]");
+          if (btn) handleUserPrompt(btn.getAttribute("data-prompt"));
+        });
+      }
+      document.getElementById("miniUpgradeBtn").addEventListener("click", () => miniDownload());
+      document.getElementById("miniNewChatBtn").addEventListener("click", () => {
+        if (miniState.busy) return;
+        miniResetContext();
+        showToast("Начинаем разговор заново: mini забыла, что вы говорили");
       });
       document.getElementById("miniForgetBtn").addEventListener("click", async () => {
         try { await miniCacheDelete(); } catch (e) { /* ничего */ }
