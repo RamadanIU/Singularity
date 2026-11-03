@@ -68,10 +68,30 @@ def iter_input_files(paths: List[str]) -> List[Path]:
 _SRT_TIME = re.compile(r"^\d{1,2}:\d{2}:\d{2}[,.]\d{1,3}\s*-->")
 
 
+def detect_text_encoding(path: Path, sample_bytes: int = 1 << 20) -> str:
+    """
+    UTF-8 (с BOM или без), UTF-16 по BOM, иначе Windows-1251 — в ней сохранены многие русские .srt.
+    Раньше всё читалось как UTF-8 с errors="ignore", и файл в Windows-1251 молча превращался в пустоту.
+    """
+    with open(path, "rb") as f:
+        head = f.read(sample_bytes)
+    if head.startswith(b"\xef\xbb\xbf"):
+        return "utf-8-sig"
+    if head.startswith((b"\xff\xfe", b"\xfe\xff")):
+        return "utf-16"
+    try:
+        head.decode("utf-8")
+        return "utf-8"
+    except UnicodeDecodeError as err:
+        if err.start >= len(head) - 3 and len(head) == sample_bytes:   # символ разрезан границей куска
+            return "utf-8"
+        return "cp1251"
+
+
 def iter_clean_lines(path: Path, keep_hash_lines: bool = False) -> Iterator[str]:
     """Строки файла без мусора: таймкоды и номера субтитров, HTML-теги, ремарки [музыка]."""
     is_srt = path.suffix.lower() == ".srt"
-    with open(path, "r", encoding="utf-8", errors="ignore") as f:
+    with open(path, "r", encoding=detect_text_encoding(path), errors="ignore") as f:
         for raw in f:
             s = raw.strip()
             if not s:
@@ -92,9 +112,13 @@ class Tokenizer:
 
     NEWLINE = "<n>"
 
-    def __init__(self, model_path: str):
+    def __init__(self, model_path: Optional[str] = None, model_proto: Optional[bytes] = None):
         import sentencepiece as spm
-        self.sp = spm.SentencePieceProcessor(model_file=model_path)
+        if model_proto is not None:
+            # Токенизатор, сохранённый внутри чекпоинта/экспорта: веса работают на любом компьютере
+            self.sp = spm.SentencePieceProcessor(model_proto=model_proto)
+        else:
+            self.sp = spm.SentencePieceProcessor(model_file=model_path)
         self.vocab_size = self.sp.get_piece_size()
         self.nl_id = self.sp.piece_to_id(self.NEWLINE)
         self.eos_id = self.sp.eos_id()
@@ -237,7 +261,12 @@ class BatchSampler:
                              f"Уменьшите --seq-len или добавьте текстов.")
         self.tokens, self.start, self.end = tokens, start, end
         self.seq_len, self.batch_size, self.device = seq_len, batch_size, device
+        self.seed = seed
         self.rng = np.random.default_rng(seed)
+
+    def reset(self) -> None:
+        """Начать выборку окон заново (валидация каждый раз на одних и тех же окнах)."""
+        self.rng = np.random.default_rng(self.seed)
 
     def get(self):
         import torch
@@ -318,6 +347,7 @@ def config_from_args(args: argparse.Namespace, vocab_size: int) -> E.SLRNetConfi
 def evaluate(model, sampler: BatchSampler, n_batches: int, autocast_ctx) -> Dict[str, float]:
     import torch
     model.eval()
+    sampler.reset()
     losses, depth = [], []
     with torch.no_grad(), autocast_ctx:
         for _ in range(n_batches):
@@ -344,6 +374,9 @@ def cmd_train(args: argparse.Namespace) -> None:
 
     torch.manual_seed(args.seed)
     random.seed(args.seed)
+    # На CPU сверхмалые (денормализованные) числа в softmax и градиентах обрабатываются в десятки раз
+    # медленнее обычных; их обнуление ничего не меняет в качестве, а шаг обучения ускоряет на ~25%.
+    torch.set_flush_denormal(True)
     device = pick_device(args.device)
     meta, tokens, tok_path = load_dataset(args.data)
     tok = Tokenizer(tok_path)
@@ -374,7 +407,11 @@ def cmd_train(args: argparse.Namespace) -> None:
     train_model = torch.compile(model) if args.compile else model
 
     val_start = int(meta["val_start"])
-    train_sampler = BatchSampler(tokens, 0, val_start, args.seq_len, args.batch_size, device, args.seed)
+    # При продолжении (--resume) сдвигаем зерно: иначе модель заново увидела бы те же самые батчи,
+    # что и в начале обучения. Валидация, наоборот, всегда на одних и тех же окнах — так её цифры
+    # между запусками можно честно сравнивать.
+    train_sampler = BatchSampler(tokens, 0, val_start, args.seq_len, args.batch_size, device,
+                                 args.seed + 1_000_003 * start_step)
     try:
         val_sampler = BatchSampler(tokens, val_start, len(tokens), args.seq_len, args.batch_size, device,
                                    args.seed + 1)
@@ -397,14 +434,45 @@ def cmd_train(args: argparse.Namespace) -> None:
     with open(out / "config.json", "w", encoding="utf-8") as f:
         json.dump({"config": cfg.to_dict(), "args": vars(args)}, f, ensure_ascii=False, indent=2)
 
+    tok_proto = tok.sp.serialized_model_proto()
+
     def save(path: Path, step: int) -> None:
+        # Сначала во временный файл, потом переименование: если процесс убьют посреди записи,
+        # старый чекпоинт останется целым.
+        tmp = path.with_name(path.name + ".tmp")
         torch.save({"model": model.state_dict(), "optimizer": optimizer.state_dict(),
                     "config": cfg.to_dict(), "step": step, "best_val": best_val,
-                    "tokenizer": os.path.abspath(tok_path), "bytes_per_token": meta["bytes_per_token"]},
-                   path)
+                    "tokenizer": os.path.abspath(tok_path), "tokenizer_proto": tok_proto,
+                    "bytes_per_token": meta["bytes_per_token"]},
+                   tmp)
+        os.replace(tmp, path)
+
+    # Журнал метрик (по строке JSON на запись) — по нему удобно строить графики обучения
+    metrics_file = open(out / "metrics.jsonl", "a", encoding="utf-8")
+
+    def log_metrics(**kv) -> None:
+        metrics_file.write(json.dumps(kv, ensure_ascii=False) + "\n")
+        metrics_file.flush()
+
+    # Остановка по Ctrl+C / SIGTERM: дописываем текущий шаг и сохраняем last.pt, чтобы потом
+    # продолжить с --resume, не потеряв прогресс.
+    stop_requested = {"flag": False}
+
+    def request_stop(signum, frame) -> None:
+        stop_requested["flag"] = True
+        print(f"\nПолучен сигнал {signum}: сохраняю чекпоинт и останавливаюсь ...", flush=True)
+
+    import signal
+    for sig in (signal.SIGINT, signal.SIGTERM):
+        try:
+            signal.signal(sig, request_stop)
+        except (ValueError, OSError):   # не главный поток / платформа без сигнала
+            pass
 
     model.train()
     t_last = time.time()
+    t_start = time.time()
+    tokens_seen = start_step * tokens_per_step
     for step in range(start_step, args.max_steps):
         lr = lr_at(step, args)
         for g in optimizer.param_groups:
@@ -418,39 +486,74 @@ def cmd_train(args: argparse.Namespace) -> None:
         grad_norm = torch.nn.utils.clip_grad_norm_(model.parameters(), args.grad_clip)
         optimizer.step()
         optimizer.zero_grad(set_to_none=True)
+        tokens_seen += tokens_per_step
 
         if step % args.log_every == 0 or step == args.max_steps - 1:
             dt = time.time() - t_last
             t_last = time.time()
             steps_done = args.log_every if step > start_step else 1
+            tps = tokens_per_step * steps_done / max(dt, 1e-9)
             print(f"шаг {step:6d} | loss {float(stats['ce_loss']):.4f} | aux {float(stats['router_aux']):.3f} | "
                   f"глубина {float(stats['core_depth_mean']):.2f} | lr {lr:.2e} | |g| {float(grad_norm):.2f} | "
-                  f"{tokens_per_step * steps_done / max(dt, 1e-9):,.0f} ток/с")
+                  f"{tps:,.0f} ток/с | {tokens_seen / 1e6:.1f} млн ток", flush=True)
+            log_metrics(kind="train", step=step, loss=float(stats["ce_loss"]), lr=lr,
+                        grad_norm=float(grad_norm), depth=float(stats["core_depth_mean"]),
+                        tok_per_s=tps, tokens=tokens_seen, time=time.time())
 
-        last = step == args.max_steps - 1
-        if (step > 0 and step % args.eval_every == 0) or last:
+        last = step == args.max_steps - 1 or stop_requested["flag"]
+        if (step > 0 and step % args.eval_every == 0) or (last and not stop_requested["flag"]):
             ev = evaluate(model, val_sampler, args.eval_batches, autocast_ctx)
             bpb = ev["loss"] / math.log(2) / meta["bytes_per_token"]
             improved = ev["loss"] < best_val
             best_val = min(best_val, ev["loss"])
             print(f"  ВАЛИДАЦИЯ: loss {ev['loss']:.4f} | перплексия {math.exp(min(20, ev['loss'])):.1f} | "
-                  f"{bpb:.3f} бит/байт | глубина мышления {ev['depth']:.2f}{' | новый лучший' if improved else ''}")
+                  f"{bpb:.3f} бит/байт | глубина мышления {ev['depth']:.2f}{' | новый лучший' if improved else ''}",
+                  flush=True)
+            log_metrics(kind="val", step=step, loss=ev["loss"], ppl=math.exp(min(20, ev["loss"])), bpb=bpb,
+                        depth=ev["depth"], tokens=tokens_seen, time=time.time())
             if improved:
                 save(out / "best.pt", step + 1)
             if args.sample_prompt:
                 txt = sample_text(model, tok, args.sample_prompt, 60, 0.8, 50, 0.95, 1.1, device)
-                print(f"  ПРИМЕР: {args.sample_prompt!r} -> {txt!r}")
+                print(f"  ПРИМЕР: {args.sample_prompt!r} -> {txt!r}", flush=True)
         if (step > 0 and step % args.save_every == 0) or last:
             save(out / "last.pt", step + 1)
-    print(f"Готово. Чекпоинты: {out}/best.pt (лучший по валидации), {out}/last.pt")
+        if stop_requested["flag"]:
+            print(f"Остановлено на шаге {step + 1}. Продолжить: --resume {out}/last.pt", flush=True)
+            break
+    metrics_file.close()
+    print(f"Готово за {(time.time() - t_start) / 60:.1f} мин. "
+          f"Чекпоинты: {out}/best.pt (лучший по валидации), {out}/last.pt")
+
+
+def _tokenizer_for(ckpt_path: str, proto: Optional[bytes], path: Optional[str]) -> Tokenizer:
+    """Токенизатор: из самого файла весов, иначе по сохранённому пути, иначе tokenizer.model рядом."""
+    if proto:
+        return Tokenizer(model_proto=bytes(proto))
+    candidates = [path, str(Path(ckpt_path).with_name("tokenizer.model"))]
+    for cand in candidates:
+        if cand and os.path.exists(cand):
+            return Tokenizer(cand)
+    raise FileNotFoundError(f"Не найден токенизатор для {ckpt_path} (искал: {candidates})")
 
 
 def load_model(ckpt_path: str, device):
+    """Модель из чекпоинта обучения (.pt) или из упакованных троичных весов (.npz, см. export)."""
     import torch
+    if ckpt_path.endswith(".npz"):
+        with np.load(ckpt_path, allow_pickle=False) as z:
+            arrays = {k: z[k] for k in z.files}
+        cfg = E.SLRNetConfig(**json.loads(str(arrays.pop("config"))))
+        proto = arrays.pop("tokenizer_proto", None)
+        for k in [k for k in arrays if k.startswith("meta.")]:
+            arrays.pop(k)
+        model = E.SLRNetLanguageModel.from_packed(cfg, arrays)
+        tok = _tokenizer_for(ckpt_path, None if proto is None else proto.tobytes(), None)
+        return model.to(device).eval(), tok
     ckpt = torch.load(ckpt_path, map_location="cpu", weights_only=False)
     model = E.SLRNetLanguageModel(E.SLRNetConfig(**ckpt["config"]))
     model.load_state_dict(ckpt["model"])
-    return model.to(device).eval(), Tokenizer(ckpt["tokenizer"])
+    return model.to(device).eval(), _tokenizer_for(ckpt_path, ckpt.get("tokenizer_proto"), ckpt.get("tokenizer"))
 
 
 def cmd_sample(args: argparse.Namespace) -> None:
@@ -481,9 +584,18 @@ def cmd_sample(args: argparse.Namespace) -> None:
 
 def cmd_export(args: argparse.Namespace) -> None:
     import torch
-    model, _ = load_model(args.ckpt, torch.device("cpu"))
+    model, tok = load_model(args.ckpt, torch.device("cpu"))
     packed = model.export_packed()
-    np.savez_compressed(args.out, config=json.dumps(model.config.to_dict()), **packed)
+    extra: Dict[str, np.ndarray] = {
+        # Токенизатор кладём внутрь: один файл весов = готовая к запуску модель
+        "tokenizer_proto": np.frombuffer(tok.sp.serialized_model_proto(), dtype=np.uint8),
+    }
+    if args.ckpt.endswith(".pt"):
+        ckpt = torch.load(args.ckpt, map_location="cpu", weights_only=False)
+        extra["meta.step"] = np.array([ckpt.get("step", 0)], dtype=np.int64)
+        extra["meta.best_val"] = np.array([ckpt.get("best_val", float("nan"))], dtype=np.float32)
+        extra["meta.bytes_per_token"] = np.array([ckpt.get("bytes_per_token", float("nan"))], dtype=np.float32)
+    np.savez_compressed(args.out, config=json.dumps(model.config.to_dict()), **extra, **packed)
     size = os.path.getsize(args.out) / 1024 ** 2
     fp32 = sum(p.numel() for p in model.parameters()) * 4 / 1024 ** 2
     print(f"Экспортировано в {args.out}: {size:.2f} МБ (в FP32 было бы {fp32:.1f} МБ, сжатие ×{fp32 / size:.1f})")

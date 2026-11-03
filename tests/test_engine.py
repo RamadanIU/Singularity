@@ -145,6 +145,30 @@ def test_export_packed_roundtrip():
     assert abs(float(packed[f"{name}.weight.gamma"][0]) - gamma) < 1e-6
 
 
+def test_model_from_packed_gives_same_logits():
+    """Упакованные троичные веса загружаются обратно и дают те же логиты (остальное — float16)."""
+    torch.manual_seed(7)
+    cfg = E.make_config("tiny", vocab_size=50)
+    model = E.SLRNetLanguageModel(cfg).eval()
+    with torch.no_grad():   # «обученные» веса с заметным разбросом, а не только инициализация
+        for p in model.parameters():
+            p.add_(torch.randn_like(p) * 0.02)
+    restored = E.SLRNetLanguageModel.from_packed(cfg, model.export_packed()).eval()
+    # Троичные матрицы совпадают в точности
+    for (n1, m1), (_, m2) in zip(model.named_modules(), restored.named_modules()):
+        if isinstance(m1, E.BitLinear158):
+            t1, g1 = m1.export_ternary()
+            t2, g2 = m2.export_ternary()
+            assert np.array_equal(t1, t2), n1
+            assert abs(g1 - g2) < 1e-4 * max(g1, 1e-6), n1
+    x = torch.randint(0, 50, (2, 40))
+    with torch.no_grad():
+        l1, _, _ = model(x, routing="all")
+        l2, _, _ = restored(x, routing="all")
+    assert (l1 - l2).abs().max() < 0.05 * l1.abs().max()
+    assert (l1.argmax(-1) == l2.argmax(-1)).float().mean() > 0.9
+
+
 def test_numpy_prototype_gradients_are_exact():
     proto = E.NumpySLRNetPrototype(vocab_size=20, d_model=12, memory_slots=8, quantize=False,
                                    dtype=np.float64, seed=11)
