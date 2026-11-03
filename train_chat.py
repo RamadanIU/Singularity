@@ -893,7 +893,7 @@ def cmd_align(args: argparse.Namespace) -> None:
                 if sc is not it.context:
                     seqs.append(seq_for(sc, it.reply))
                 # поощрение: свой верный ответ модели тоже «хороший» (rejection sampling)
-                if it.positives:
+                if it.positives and args.own_positives:
                     seqs.append(seq_for(sc, rng.choice(it.positives)))
                     own_chosen.append(len(seqs) - 1)
                 # 1) свой плохой ответ (по награде)
@@ -921,7 +921,14 @@ def cmd_align(args: argparse.Namespace) -> None:
             pol_lp, cnt = sequence_logprobs(model, x, y)
             ci = torch.tensor([p[0] for p in pairs], dtype=torch.long)
             ri = torch.tensor([p[1] for p in pairs], dtype=torch.long)
-            margin = (pol_lp[ci] - ref_lp[ci]) - (pol_lp[ri] - ref_lp[ri])
+            if args.length_norm:
+                # Средний log p на токен (как в SimPO): иначе короткий ответ выигрывает просто потому, что
+                # он короткий, и модель учится отвечать голым числом (проверено: счёт упал с 35% до 12%)
+                n_tok = cnt.clamp(min=1).float()
+                pol_n, ref_n = pol_lp / n_tok, ref_lp / n_tok
+            else:
+                pol_n, ref_n = pol_lp, ref_lp
+            margin = (pol_n[ci] - ref_n[ci]) - (pol_n[ri] - ref_n[ri])
             # Потолок отрыва: уже надёжно разведённые пары (β·отрыв > max_margin) больше не тянут модель —
             # иначе она уходит всё дальше от SFT-модели и портит то, что уже умела (проверено: −4% точности)
             active = (args.beta * margin.detach() < args.max_margin).float()
@@ -1208,6 +1215,9 @@ def main(argv: Optional[List[str]] = None) -> None:
     a.add_argument("--perturb", type=float, default=0.5, help="доля «небрежных» вариантов вопроса при своих ответах")
     a.add_argument("--lr", type=float, default=3e-5)
     a.add_argument("--warmup", type=int, default=30)
+    a.add_argument("--length-norm", action="store_true", help="сравнивать средний log p на токен, а не сумму")
+    a.add_argument("--no-own-positives", dest="own_positives", action="store_false",
+                   help="поощрять только эталонный ответ, а не свои верные ответы модели")
     a.add_argument("--no-mismatch", dest="mismatch", action="store_false")
     a.add_argument("--no-context-swap", dest="context_swap", action="store_false")
     a.add_argument("--log-every", type=int, default=20)

@@ -28,7 +28,7 @@ from typing import Dict, List, Optional, Sequence, Tuple
 SEED_DIR = Path(__file__).resolve().parent / "training" / "chat"
 
 SEED_REPEAT = 8          # сколько раз каждая ручная формулировка входит в эпоху (с разными ответами)
-TAG_WEIGHT = {"личность": 3}   # вопросы о самом боте: иначе их забивают шаблоны «как МЕНЯ зовут»
+TAG_WEIGHT = {"личность": 3, "кризис": 4, "эмоции": 2}   # вопросы о самом боте: иначе их забивают шаблоны «как МЕНЯ зовут»
 MULTI_REPEAT = 8         # сколько раз — ручной многоходовой диалог
 BOT_NAME = "SLR-Net"
 
@@ -732,6 +732,33 @@ class Gen:
             turns += [("user", q), ("bot", a)]
         return row(turns, "шаблон:я и ты", order[-1][2])
 
+    # ---------- о чём собеседник НЕ рассказывал: честно «не знаю», а не выдуманный факт
+    def unknown_fact(self, train: bool) -> dict:
+        names = NAMES_TRAIN if train else NAMES_TEST
+        facts = {
+            "name": (lambda: f"Меня зовут {self.pick(names)}.", ["Как меня зовут?", "Ты знаешь, как меня зовут?"],
+                     "Скажи моё имя."),
+            "age": (lambda: (lambda a: f"Мне {a} {years_word(a)}.")(self.rng.randint(5, 90)), ["Сколько мне лет?", "Какой у меня возраст?"],
+                    "Напомни мой возраст."),
+            "city": (lambda: "Я живу {} {}.".format(*(lambda c: (v_prep(c[1]), c[1]))(self.pick(CITIES_TRAIN))),
+                     ["Где я живу?", "В каком городе я живу?"], "Напомни, где я живу."),
+            "job": (lambda: f"Я работаю {self.pick(PROFESSIONS_TRAIN)[1]}.", ["Кем я работаю?", "Какая у меня профессия?"],
+                    "Напомни, кем я работаю."),
+            "color": (lambda: f"Мой любимый цвет — {self.pick(COLORS_TRAIN)}.", ["Какой мой любимый цвет?"],
+                      "Напомни мой любимый цвет."),
+            "food": (lambda: f"Я люблю {self.pick(FOODS_TRAIN)}.", ["Что я люблю есть?"], "Напомни, что я люблю есть."),
+        }
+        asked = self.pick(list(facts))
+        turns: List[Turn] = []
+        if self.rng.random() < 0.7:                         # рассказали о другом — а спрашивают о том, чего не было
+            given = self.pick([k for k in facts if k != asked])
+            turns += [("user", facts[given][0]()), ("bot", self.pick(["Понятно, спасибо!", "Запомнил!", "Интересно!"]))]
+        turns += self.distract(2)
+        q = self.pick(facts[asked][1]) if train else facts[asked][2]
+        ans = self.pick(["Я не знаю: об этом мы ещё не говорили. Расскажешь?", "Об этом мы ещё не говорили, так что не знаю.",
+                         "Не знаю — об этом мы пока не говорили. Расскажешь?"])
+        return row(turns + [("user", q), ("bot", ans)], "шаблон:не говорили", chk("не знаю", "не говорили"))
+
     # ---------- мнения и советы
     def opinion(self, train: bool, topics) -> dict:
         nom, prep, acc, ans, key = self.pick(topics)
@@ -961,6 +988,7 @@ TEMPLATE_PLAN = [
     ("capital", 1200, 30), ("object_color", 700, 20), ("animal_sound", 400, 15), ("opposite", 1200, 30),
     ("category", 800, 20), ("weekday", 800, 20), ("month", 1000, 25), ("season", 150, 8), ("legs", 300, 12),
     ("definition", 2500, 40), ("person", 500, 15), ("repeat", 2000, 30), ("gibberish", 600, 0), ("foreign", 500, 0),
+    ("unknown_fact", 2500, 30),           # в конце: проверочные задачи выше не меняются
 ]
 
 
