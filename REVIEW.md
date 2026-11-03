@@ -217,6 +217,10 @@
 
 ## 7. Как обучить маленькую, но умную модель — план
 
+> Первое обучение по этому плану (шаги 1–3: русские субтитры OpenSubtitles, 2.34 ГБ, пресет `mini`
+> на CPU) уже сделано — результаты, проверка и команды для повторения в
+> [TRAINING_RU_SUBTITLES.md](TRAINING_RU_SUBTITLES.md).
+
 ### Шаг 1. Данные (самое важное)
 - **Объём.** Ориентир — не меньше 20 токенов на параметр (правило Chinchilla), а для маленьких моделей
   выгодно учить в десятки и сотни раз дольше (современные малые модели видят триллионы токенов). Для пресета
@@ -277,7 +281,7 @@
 ```bash
 pip install -r requirements.txt
 python slr_net_engine.py                  # самопроверка: размеры, градиенты, каузальность
-python -m pytest -q tests/                # 42 проверки (+12 браузерных при установленном playwright)
+python -m pytest -q tests/                # ⟨TODO:py⟩ проверок (+⟨TODO:br⟩ браузерных при установленном playwright)
 python slr_net_trainer_chat.py --load slr_net_trained.npz --no-chat   # демо + честная метрика сети
 git diff $(git rev-list --max-parents=0 HEAD) -- slr_net_engine.py   # изменения относительно присланной версии
 ```
