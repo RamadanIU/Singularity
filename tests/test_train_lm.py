@@ -53,6 +53,13 @@ def test_full_pipeline_prepare_train_export_sample(tmp_path, capsys):
                    "--sample-prompt", "", "--resume", str(run / "last.pt")])
     assert "шаг      4" in capsys.readouterr().out
 
+    report = tmp_path / "eval.json"
+    train_lm.main(["eval", "--ckpt", str(run / "best.pt"), "--data", str(data), "--seq-len", "32",
+                   "--batch-size", "2", "--batches", "2", "--json", str(report)])
+    rows = json.loads(report.read_text(encoding="utf-8"))
+    assert [r["model"].split(":")[0] for r in rows] == ["Частоты токенов (униграммы)", "Обученная модель",
+                                                         "Та же сеть со случайными весами"]
+
     packed = tmp_path / "model.npz"
     train_lm.main(["export", "--ckpt", str(run / "best.pt"), "--out", str(packed)])
     # Экспорт самодостаточен: токенизатор внутри файла, исходные данные больше не нужны

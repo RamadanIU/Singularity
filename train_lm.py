@@ -601,6 +601,56 @@ def cmd_export(args: argparse.Namespace) -> None:
     print(f"Экспортировано в {args.out}: {size:.2f} МБ (в FP32 было бы {fp32:.1f} МБ, сжатие ×{fp32 / size:.1f})")
 
 
+def cmd_eval(args: argparse.Namespace) -> None:
+    """
+    Честная проверка «модель действительно обучилась»: на отложенной (валидационной) части корпуса,
+    которую модель никогда не видела, сравниваем
+      • обученную модель (одну или несколько),
+      • ту же архитектуру со случайными весами (ничего не знает: loss ≈ ln V),
+      • частотную модель (униграммы): знает только, какие токены встречаются чаще.
+    Модель, которая выучила язык, должна быть заметно лучше обеих.
+    """
+    import torch
+    torch.set_flush_denormal(True)
+    torch.manual_seed(args.seed)
+    device = pick_device(args.device)
+    meta, tokens, _ = load_dataset(args.data)
+    val_start, V = int(meta["val_start"]), int(meta["vocab_size"])
+    bpt = float(meta["bytes_per_token"])
+    sampler = BatchSampler(tokens, val_start, len(tokens), args.seq_len, args.batch_size, device, args.seed)
+    rows = []
+
+    n_uni = min(val_start, args.unigram_tokens)
+    counts = np.bincount(np.asarray(tokens[:n_uni], dtype=np.int64), minlength=V).astype(np.float64) + 1.0
+    logp = np.log(counts / counts.sum())
+    val_tokens = np.asarray(tokens[val_start:], dtype=np.int64)
+    rows.append(("Частоты токенов (униграммы)", float(-logp[val_tokens].mean()), None))
+
+    first_cfg = None
+    for ckpt in args.ckpt:
+        model, tok = load_model(ckpt, device)
+        if model.config.vocab_size != V:
+            raise ValueError(f"{ckpt}: словарь модели {model.config.vocab_size} != словарь данных {V}")
+        first_cfg = first_cfg or model.config
+        ev = evaluate(model, sampler, args.batches, nullcontext())
+        rows.append((f"Обученная модель: {ckpt}", ev["loss"], ev["depth"]))
+    if first_cfg is not None:
+        rnd = E.SLRNetLanguageModel(E.SLRNetConfig(**first_cfg.to_dict())).to(device)
+        ev = evaluate(rnd, sampler, args.batches, nullcontext())
+        rows.append(("Та же сеть со случайными весами", ev["loss"], ev["depth"]))
+
+    n_eval = args.batches * args.batch_size * args.seq_len
+    print(f"Валидация: {n_eval:,} токенов из отложенной части корпуса ({len(tokens) - val_start:,} токенов, "
+          f"модель их не видела). ln V = {math.log(V):.3f}")
+    print(f"{'Модель':<60} {'loss':>7} {'перплексия':>11} {'бит/байт':>9}")
+    for name, loss, _ in rows:
+        print(f"{name[:60]:<60} {loss:7.3f} {math.exp(min(20, loss)):11.1f} {loss / math.log(2) / bpt:9.3f}")
+    if args.json:
+        with open(args.json, "w", encoding="utf-8") as f:
+            json.dump([{"model": n, "loss": l, "ppl": math.exp(min(20, l)), "bpb": l / math.log(2) / bpt}
+                       for n, l, _ in rows], f, ensure_ascii=False, indent=2)
+
+
 # =============================================================================
 # CLI
 # =============================================================================
@@ -657,12 +707,24 @@ def main(argv: Optional[List[str]] = None) -> None:
     s.add_argument("--device", default="auto")
     s.add_argument("--seed", type=int, default=0)
 
+    e = sub.add_parser("eval", help="проверка на отложенных данных против случайной и частотной модели")
+    e.add_argument("--ckpt", nargs="+", required=True, help="чекпоинты .pt и/или упакованные .npz")
+    e.add_argument("--data", required=True)
+    e.add_argument("--seq-len", type=int, default=256)
+    e.add_argument("--batch-size", type=int, default=16)
+    e.add_argument("--batches", type=int, default=50)
+    e.add_argument("--unigram-tokens", type=int, default=50_000_000)
+    e.add_argument("--json", default=None, help="сохранить таблицу в JSON")
+    e.add_argument("--device", default="auto")
+    e.add_argument("--seed", type=int, default=4242)
+
     x = sub.add_parser("export", help="упаковать троичные веса")
     x.add_argument("--ckpt", required=True)
     x.add_argument("--out", required=True)
 
     args = ap.parse_args(argv)
-    {"prepare": cmd_prepare, "train": cmd_train, "sample": cmd_sample, "export": cmd_export}[args.cmd](args)
+    {"prepare": cmd_prepare, "train": cmd_train, "sample": cmd_sample, "eval": cmd_eval,
+     "export": cmd_export}[args.cmd](args)
 
 
 if __name__ == "__main__":
