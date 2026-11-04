@@ -1434,8 +1434,9 @@ def main(argv: Optional[List[str]] = None) -> None:
     c.add_argument("--repetition-penalty", type=float, default=1.1)
     c.add_argument("--guidance", type=float, default=0.0, help="удержание темы (0 — выкл, 1–2 — сильнее)")
     c.add_argument("--context", type=int, default=240)
-    c.add_argument("--copy", type=float, default=0.0, help="механизм копирования слов из разговора (0 — выкл)")
-    c.add_argument("--copy-start", type=float, default=0.0, help="бонус началу редких слов из разговора")
+    c.add_argument("--copy", type=float, default=3.0,
+                   help="механизм копирования слов из разговора (0 — выкл; 3 подобрано на проверке)")
+    c.add_argument("--copy-start", type=float, default=2.0, help="бонус началу редких слов из разговора")
     c.add_argument("--dictionary", default=None,
                    help="внешний словарь «слово — определение»: определение подкладывается в разговор")
     c.add_argument("--seed", type=int, default=0)
