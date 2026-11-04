@@ -975,13 +975,20 @@ class Gen:
     # =========================================================================
 
     # ---------- выдуманное слово, которое никто не объяснял: честное «не знаю» + просьба объяснить
-    def new_word_unknown(self, train: bool) -> dict:
+    def new_word_unknown(self, train: bool, defs=None) -> dict:
+        if train and defs and self.rng.random() < 0.35:
+            # контраст: знакомое слово в тех же формулировках — отвечаем по знаниям, а не «не знаю»
+            word, kind, ans, key = self.pick(defs)
+            q = self.pick([f"Что такое {word}?", f"Ты знаешь, что такое {word}?", f"Что значит слово «{word}»?",
+                           f"Что за {word}?", f"Слышал слово «{word}»?"])
+            return row([("user", q), ("bot", ans)], "шаблон:определения", chk(*key.split(",")))
         w = self.pick(NONCE_TRAIN if train else NONCE_TEST)
         info = concept_info(w, self.rng)
         q = self.pick([f"Что такое {w}?", f"Ты знаешь, что такое {w}?", f"Объясни, что такое {w}.",
                        f"Что значит слово «{w}»?", f"Какого цвета {w}?", f"Где {info['verb']} {w}?",
-                       f"{cap(w)} умеет летать?", f"{cap(w)} — это животное?"]) if train \
-            else self.pick([f"Расскажи, что такое {w}.", f"Напомни, что такое {w}."])
+                       f"{cap(w)} умеет летать?", f"{cap(w)} — это животное?", f"Что за {w}?",
+                       f"Слышал слово «{w}»?", f"Для чего нужен {w}?" if nonce_gender(w) == "м" else f"Для чего нужна {w}?"]) \
+            if train else self.pick([f"Расскажи, что такое {w}.", f"Напомни, что такое {w}."])
         turns = self.distract(1) if self.rng.random() < 0.3 else []
         if q.startswith(("Что", "Ты знаешь", "Объясни", "Расскажи", "Напомни")):
             ans = self.pick(UNKNOWN_WORD_ANSWERS).format(w=w)
@@ -1002,7 +1009,7 @@ class Gen:
                      ("user", explain(w, info, self.rng, mentioned=True)), ("bot", acknowledge(w, info, self.rng))]
             turns += self.distract(2) + [("user", q), ("bot", a)]
         elif r < 0.75:                                   # объяснили сразу
-            lead = self.pick(["", "Запомни: ", "Знаешь, ", "Расскажу тебе новое слово. ", "Вот новое слово. "])
+            lead = self.pick(["", "Знаешь, ", "Расскажу тебе новое слово. ", "Вот новое слово. ", "Объясню слово. "])
             turns = [("user", lead + explain(w, info, self.rng)), ("bot", acknowledge(w, info, self.rng))]
             turns += self.distract(2) + [("user", q), ("bot", a)]
         else:                                            # объяснение и вопрос в одной реплике
@@ -1017,7 +1024,7 @@ class Gen:
         i2 = concept_info(w2, self.rng, avoid=i1["cat"])
         if self.rng.random() < 0.5:
             turns = [("user", explain(w1, i1, self.rng) + " " + explain(w2, i2, self.rng)),
-                     ("bot", self.pick(["Понял, запомнил оба слова.", "Запомнил! Два новых слова.",
+                     ("bot", self.pick(["Понял оба слова.", "Ясно, два новых слова.",
                                         f"Ясно: {w1} — {i1['cat']}, а {w2} — {i2['cat']}."]))]
         else:
             turns = [("user", explain(w1, i1, self.rng)), ("bot", acknowledge(w1, i1, self.rng)),
@@ -1064,24 +1071,28 @@ class Gen:
         reason = f"{cap(measure)} {chain}."
         r = self.rng.random()
         if r < 0.3:
-            q = self.pick([f"Кто {pos} всех?", f"Кто из них {pos} всех?"]) if train else f"Кто тут {pos} всех?"
+            q = self.pick([f"Кто {pos} всех?", f"Кто из них {pos} всех?", f"Кто {pos} всех из них?",
+                           f"Назови, кто {pos} всех.", f"А кто {pos} всех?"]) if train else f"Кто тут {pos} всех?"
             a, c = f"Рассуждаю: {measure} {chain}. Значит, {pos} всех {e[0]}.", chk(e[0], none=e[1:], tail="значит")
         elif r < 0.55:
-            q = self.pick([f"Кто {neg} всех?", f"Кто из них {neg} всех?"]) if train else f"Кто тут {neg} всех?"
+            q = self.pick([f"Кто {neg} всех?", f"Кто из них {neg} всех?", f"Кто {neg} всех из них?",
+                           f"Назови, кто {neg} всех.", f"А кто {neg} всех?"]) if train else f"Кто тут {neg} всех?"
             a, c = f"Рассуждаю: {measure} {chain}. Значит, {neg} всех {e[-1]}.", chk(e[-1], none=e[:-1], tail="значит")
         else:
             i, j = sorted(self.rng.sample(range(n), 2))
             if j == i + 1 and self.rng.random() < 0.7:                    # чаще — несоседние: нужен вывод
                 i, j = 0, n - 1
             if self.rng.random() < 0.5:
-                q = f"{e[i]} {pos}, чем {e[j]}?" if train else f"Правда ли, что {e[i]} {pos}, чем {e[j]}?"
+                q = self.pick([f"{e[i]} {pos}, чем {e[j]}?", f"Верно, что {e[i]} {pos}, чем {e[j]}?",
+                               f"{e[i]} {pos}, чем {e[j]}, да?"]) if train else f"Правда ли, что {e[i]} {pos}, чем {e[j]}?"
                 a, c = f"Да. {reason} Значит, {e[i]} {pos}, чем {e[j]}.", chk("да", none=["нет"])
             else:
-                q = f"{e[j]} {pos}, чем {e[i]}?" if train else f"Правда ли, что {e[j]} {pos}, чем {e[i]}?"
+                q = self.pick([f"{e[j]} {pos}, чем {e[i]}?", f"Верно, что {e[j]} {pos}, чем {e[i]}?",
+                               f"{e[j]} {pos}, чем {e[i]}, да?"]) if train else f"Правда ли, что {e[j]} {pos}, чем {e[i]}?"
                 a, c = f"Нет. {reason} Значит, {e[j]} {neg}, чем {e[i]}.", chk("нет", none=["да"])
-        if self.rng.random() < 0.3:
-            turns = [("user", self.pick(["Задача. ", "Слушай задачу. ", ""]) + facts),
-                     ("bot", self.pick(["Понял. Что нужно узнать?", "Запомнил. Какой вопрос?"])), ("user", q)]
+        if self.rng.random() < 0.3:          # подтверждение — только после явного «Задача:», иначе модель
+            turns = [("user", self.pick(TASK_LEADS) + facts),      # отвечает «Понял.» на любую просьбу
+                     ("bot", self.pick(TASK_ACKS)), ("user", q)]
         else:
             turns = [("user", facts + " " + q)]
         return row(turns + [("bot", a)], "шаблон:логика: цепочка", c)
@@ -1096,7 +1107,8 @@ class Gen:
         r = self.rng.random()
         if r < 0.35:            # modus ponens
             facts = [rule, f"{x} — {w}."]
-            q = self.pick([f"{x} {psg}?", f"Правда ли, что {x} {psg}?"]) if train else f"Можно ли сказать, что {x} {psg}?"
+            q = self.pick([f"{x} {psg}?", f"Правда ли, что {x} {psg}?", f"Верно, что {x} {psg}?",
+                           f"Следует ли отсюда, что {x} {psg}?"]) if train else f"Можно ли сказать, что {x} {psg}?"
             a, c = f"Да. {x} — {w}, а все {wp} {ppl}. Значит, {x} {psg}.", chk("да", none=["нет", "не обязательно"])
         elif r < 0.6:           # modus tollens
             facts = [rule, f"{x} {pneg}."]
@@ -1109,14 +1121,14 @@ class Gen:
             c = chk("не обязательно", "не следует", none=["да"])
         else:                   # про другую группу ничего не сказано
             facts = [rule, f"{x} — {w2}."]
-            q = self.pick([f"{x} {psg}?", f"Правда ли, что {x} {psg}?"]) if train else f"Можно ли сказать, что {x} {psg}?"
+            q = self.pick([f"{x} {psg}?", f"Правда ли, что {x} {psg}?", f"Верно, что {x} {psg}?",
+                           f"Следует ли отсюда, что {x} {psg}?"]) if train else f"Можно ли сказать, что {x} {psg}?"
             a = f"Неизвестно. Мы знаем только, что {wp} {ppl}, а {x} — {w2}."
             c = chk("неизвестно", "не знаю", none=["да"])
         if self.rng.random() < 0.5:
             facts.reverse()
         if self.rng.random() < 0.3:
-            turns = [("user", self.pick(["Задача на логику. ", "Слушай задачу. ", ""]) + " ".join(facts)),
-                     ("bot", self.pick(["Понял. Что нужно узнать?", "Запомнил. Какой вопрос?"])), ("user", q)]
+            turns = [("user", self.pick(TASK_LEADS) + " ".join(facts)), ("bot", self.pick(TASK_ACKS)), ("user", q)]
         else:
             turns = [("user", " ".join(facts) + " " + q)]
         return row(turns + [("bot", a)], "шаблон:логика: силлогизм", c)
@@ -1143,12 +1155,12 @@ class Gen:
             steps += f" Потом {v2a} {d}: {res} {'-' if take2 else '+'} {d} = {res2}."
             res = res2
         word = "осталось" if res < a else "стало"
-        q = self.pick([f"Сколько {forms[2]} у меня {word}?", f"Сколько у меня {word} {forms[2]}?"]) if train \
-            else f"Сколько теперь у меня {forms[2]}?"
+        q = self.pick([f"Сколько {forms[2]} у меня {word}?", f"Сколько у меня {word} {forms[2]}?",
+                       f"Сколько {forms[2]} {word}?", f"Так сколько у меня {forms[2]}?",
+                       f"Посчитай, сколько у меня {forms[2]}."]) if train else f"Сколько теперь у меня {forms[2]}?"
         ans = f"{steps} Значит, {word} {res} {plural(res, forms)}."
         if self.rng.random() < 0.3:
-            turns = [("user", " ".join(story)), ("bot", self.pick(["Понял.", "Ясно. Что нужно посчитать?"])),
-                     ("user", q)]
+            turns = [("user", self.pick(TASK_LEADS) + " ".join(story)), ("bot", self.pick(TASK_ACKS)), ("user", q)]
         else:
             turns = [("user", " ".join(story) + " " + q)]
         return row(turns + [("bot", ans)], "шаблон:задачи", chk(str(res), tail="значит"))
@@ -1277,28 +1289,30 @@ PRON = {"м": "он", "ж": "она", "с": "оно"}
 # Для каждой категории — да (True), нет (False) или вопрос не задаём (нет ключа).
 CONCEPT_PROPS = {
     "летать": ({"птица": True, "рыба": False, "зверёк": False, "дерево": False, "машина": False},
-               ["{W} умеет летать?", "{W} может летать?"], "Может ли {w} летать?",
+               ["{W} умеет летать?", "{W} может летать?", "{W} летает?", "Умеет ли {w} летать?"], "Может ли {w} летать?",
                "Да. {W} — это {cat}, а {pl} умеют летать.", "Нет. {W} — это {cat}, а {pl} не летают."),
     "плавать": ({"рыба": True, "машина": False},
-                ["{W} умеет плавать?", "{W} может плавать?"], "Может ли {w} плавать?",
+                ["{W} умеет плавать?", "{W} может плавать?", "{W} плавает?", "Умеет ли {w} плавать?"], "Может ли {w} плавать?",
                 "Да. {W} — это {cat}, а {pl} плавают.", "Нет. {W} — это {cat}, а {pl} не плавают."),
     "животное": ({"птица": True, "рыба": True, "зверёк": True, "дерево": False, "цветок": False, "напиток": False,
                   "инструмент": False, "машина": False},
-                 ["{W} — это животное?", "{W} — животное?"], "Можно ли сказать, что {w} — животное?",
+                 ["{W} — это животное?", "{W} — животное?", "Правда, что {w} — животное?", "{W} — это животное или нет?"],
+                 "Можно ли сказать, что {w} — животное?",
                  "Да. {W} — это {cat}, а {pl} — животные.", "Нет. {W} — это {cat}, то есть {kind}."),
     "растение": ({"дерево": True, "цветок": True, "птица": False, "рыба": False, "зверёк": False, "инструмент": False,
                   "машина": False},
-                 ["{W} — это растение?", "{W} — растение?"], "Можно ли сказать, что {w} — растение?",
+                 ["{W} — это растение?", "{W} — растение?", "Правда, что {w} — растение?", "{W} — это растение или нет?"],
+                 "Можно ли сказать, что {w} — растение?",
                  "Да. {W} — это {cat}, а {pl} — растения.", "Нет. {W} — это {cat}, то есть {kind}."),
     "живое": ({"птица": True, "рыба": True, "зверёк": True, "дерево": True, "цветок": True, "инструмент": False,
                "машина": False, "напиток": False},
-              ["{W} {живой}?", "{W} — {живой}?"], "Можно ли сказать, что {w} — {живой}?",
+              ["{W} {живой}?", "{W} — {живой}?", "Правда, что {w} {живой}?"], "Можно ли сказать, что {w} — {живой}?",
               "Да. {W} — это {cat}, а {pl} — живые.", "Нет. {W} — это {cat}, а {pl} не живые."),
     "съесть": ({"ягода": True, "овощ": True, "инструмент": False, "машина": False},
-               ["{W} можно съесть?", "{W} съедобн{ый}?"], "Можно ли съесть {acc}?",
+               ["{W} можно съесть?", "{W} съедобн{ый}?", "{W} едят?"], "Можно ли съесть {acc}?",
                "Да. {W} — это {cat}, а {pl} едят.", "Нет. {W} — это {cat}, а {pl} не едят."),
     "пить": ({"напиток": True, "инструмент": False, "машина": False, "дерево": False},
-             ["{W} можно пить?"], "Можно ли пить {acc}?",
+             ["{W} можно пить?", "{W} пьют?"], "Можно ли пить {acc}?",
              "Да. {W} — это {cat}, а {pl} пьют.", "Нет. {W} — это {cat}, а {pl} не пьют."),
 }
 
@@ -1341,10 +1355,10 @@ def explain(w: str, info: dict, rng: random.Random, mentioned: bool = False) -> 
 def acknowledge(w: str, info: dict, rng: random.Random) -> str:
     pron = PRON[info["g"]]
     return rng.choice([
-        f"Понял! {cap(w)} — это {info['size']} {info['cat']} {info['color']} цвета, {pron} {info['verb']} {info['place']}. Спасибо, запомнил.",
+        f"Понял! {cap(w)} — это {info['size']} {info['cat']} {info['color']} цвета, {pron} {info['verb']} {info['place']}. Спасибо, теперь знаю.",
         f"Спасибо, теперь знаю: {w} — это {info['cat']}, {pron} {info['verb']} {info['place']}.",
-        f"Ясно! {cap(w)} — {info['size']} {info['cat']} {info['color']} цвета. Запомню.",
-        f"Запомнил: {w} — это {info['cat']}.",
+        f"Ясно! {cap(w)} — {info['size']} {info['cat']} {info['color']} цвета. Буду знать.",
+        f"Понял: {w} — это {info['cat']}.",
     ])
 
 
@@ -1358,21 +1372,25 @@ def concept_question(w: str, info: dict, rng: random.Random, train: bool,
     kind = rng.choice(kinds + ["свойство"] * (2 if props else 0))
     src = "шаблон:новое слово"
     if kind == "что":
-        q = rng.choice([f"Что такое {w}?", f"Что ты знаешь про слово «{w}»?", f"Так что такое {w}?"]) if train \
+        q = rng.choice([f"Что такое {w}?", f"Что ты знаешь про слово «{w}»?", f"Так что такое {w}?",
+                        f"Объясни ещё раз, что такое {w}.", f"{W} — это что?", f"Расскажи про слово «{w}»."]) if train \
             else f"Напомни, что такое {w}."
         a = f"{W} — это {info['size']} {cat} {info['color']} цвета, {pron} {info['verb']} {info['place']}."
         c = chk(KIND_STEM[cat], none=[KIND_STEM[other_cat]] if other_cat else ())
     elif kind == "цвет":
-        q = rng.choice([f"Какого цвета {w}?", f"А какого цвета {w}?"]) if train else f"Какой цвет у {nonce_gen(w)}?"
+        q = rng.choice([f"Какого цвета {w}?", f"А какого цвета {w}?", f"Какой у {nonce_gen(w)} цвет?",
+                        f"{W} какого цвета?"]) if train else f"Назови цвет {nonce_gen(w)}."
         a, c = f"{W} — {info['color']} цвета.", chk(info["color"])
     elif kind == "размер":
         big, small = ("большой", "маленький") if g == "м" else ("большая", "маленькая")
-        q = rng.choice([f"{W} {big} или {small}?", f"{W} {small} или {big}?"]) if train else f"Какого размера {w}?"
+        q = rng.choice([f"{W} {big} или {small}?", f"{W} {small} или {big}?", f"Какой величины {w}?",
+                        f"{W} какой величины?"]) if train else f"Какого размера {w}?"
         a = f"{W} — {info['size']} {cat}."
         c = chk("больш", "огромн", none=["маленьк", "крошечн"]) if info["big"] else \
             chk("маленьк", "крошечн", none=["больш", "огромн"])
     elif kind == "место":
-        q = f"Где {info['verb']} {w}?" if train else f"Где обычно {info['verb']} {w}?"
+        q = rng.choice([f"Где {info['verb']} {w}?", f"А где {info['verb']} {w}?", f"В каком месте {info['verb']} {w}?"]) \
+            if train else f"Где обычно {info['verb']} {w}?"
         a, c = f"{W} {info['verb']} {info['place']}.", chk(info["place"].split()[-1])
     elif kind == "зачем":
         need = "нужен" if g == "м" else "нужна"
@@ -1381,7 +1399,8 @@ def concept_question(w: str, info: dict, rng: random.Random, train: bool,
     elif kind == "выбор":
         alt = other_cat or rng.choice([x for x in CONCEPT_KINDS if x != cat])
         opts = [cat, alt] if rng.random() < 0.5 else [alt, cat]
-        q = f"{W} — это {opts[0]} или {opts[1]}?" if train else f"Скажи, {w} — {opts[0]} или {opts[1]}?"
+        q = rng.choice([f"{W} — это {opts[0]} или {opts[1]}?", f"{W} — {opts[0]} или {opts[1]}?",
+                        f"Что такое {w}: {opts[0]} или {opts[1]}?"]) if train else f"Скажи, {w} — {opts[0]} или {opts[1]}?"
         a, c = f"{W} — это {cat}.", chk(KIND_STEM[cat], none=[KIND_STEM[alt]])
     else:
         p = rng.choice(props)
@@ -1397,6 +1416,8 @@ def concept_question(w: str, info: dict, rng: random.Random, train: bool,
     return q, a, c, src
 
 
+TASK_LEADS = ["Задача: ", "Слушай задачу: ", "Задача на логику: ", "Реши задачу: "]
+TASK_ACKS = ["Понял условие. Что нужно узнать?", "Условие понял. Какой вопрос?"]
 RELATIONS = [("выше", "ниже", "по росту"), ("старше", "младше", "по возрасту"), ("быстрее", "медленнее", "по скорости"),
              ("сильнее", "слабее", "по силе"), ("тяжелее", "легче", "по весу")]
 SYLLOGISM_PROPS = [("любят снег", "любит снег", "не любит снег"), ("умеют петь", "умеет петь", "не умеет петь"),
@@ -1407,7 +1428,9 @@ SYLLOGISM_PROPS = [("любят снег", "любит снег", "не люби
                    ("рано встают", "рано встаёт", "не встаёт рано"), ("говорят шёпотом", "говорит шёпотом", "не говорит шёпотом")]
 COUNT_OBJECTS_TRAIN = [("яблоко", "яблока", "яблок"), ("конфета", "конфеты", "конфет"), ("книга", "книги", "книг"),
                        ("карандаш", "карандаша", "карандашей"), ("марка", "марки", "марок"), ("мяч", "мяча", "мячей"),
-                       ("орех", "ореха", "орехов"), ("шарик", "шарика", "шариков"), ("монета", "монеты", "монет")]
+                       ("орех", "ореха", "орехов"), ("шарик", "шарика", "шариков"), ("монета", "монеты", "монет"),
+                       ("ручка", "ручки", "ручек"), ("банан", "банана", "бананов"), ("кубик", "кубика", "кубиков"),
+                       ("пряник", "пряника", "пряников"), ("цветок", "цветка", "цветов")]
 COUNT_OBJECTS_TEST = [("груша", "груши", "груш"), ("тетрадь", "тетради", "тетрадей"), ("пирожок", "пирожка", "пирожков")]
 TAKE_VERBS = [("Я съел", "съел"), ("Я отдал другу", "отдал"), ("Я потерял", "потерял"), ("Я подарил сестре", "подарил")]
 ADD_VERBS = [("Мне дали ещё", "дали ещё"), ("Я купил ещё", "купил ещё"), ("Я нашёл ещё", "нашёл ещё")]
@@ -1474,7 +1497,7 @@ SHOWCASE: List[List[str]] = [
     ["Что такое бримза?"],
     ["Что такое курдяпа?", "Я не знаю, что такое «курдяпа». Объясни, пожалуйста!",
      "Курдяпа — это маленькая птица зелёного цвета. Она живёт у реки.",
-     "Понял! Курдяпа — это маленькая птица зелёного цвета, она живёт у реки. Спасибо, запомнил.",
+     "Понял! Курдяпа — это маленькая птица зелёного цвета, она живёт у реки. Спасибо, теперь знаю.",
      "Курдяпа умеет летать?"],
     ["Прумбас — это огромная рыба серого цвета, она живёт в море. Где живёт прумбас?"],
     ["Фламбик — это инструмент. Он нужен, чтобы резать бумагу. Фламбик — живой?"],
@@ -1607,7 +1630,7 @@ def build_dataset(mined: List[dict], seed: int = 11, n_compose: int = 30000, min
         [b.answers[0] for b in singles if len(b.answers[0].split()) <= 6]
     phrases_test = [r["turns"][1][1] for r in m_val if 2 <= len(r["turns"][1][1].split()) <= 6] or phrases_train[:20]
     extra = {"opposite": (opp,), "definition": (defs,), "person": (people,), "opinion": (_table(TOPICS),),
-             "howto": (_table(HOWTO),), "new_word_reference": (defs,)}
+             "howto": (_table(HOWTO),), "new_word_reference": (defs,), "new_word_unknown": (defs,)}
     template_train: List[dict] = []
     for name, n_train, n_test in TEMPLATE_PLAN:
         fn = getattr(g, name)
