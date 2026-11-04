@@ -1090,12 +1090,10 @@ class Gen:
                 q = self.pick([f"{e[j]} {pos}, чем {e[i]}?", f"Верно, что {e[j]} {pos}, чем {e[i]}?",
                                f"{e[j]} {pos}, чем {e[i]}, да?"]) if train else f"Правда ли, что {e[j]} {pos}, чем {e[i]}?"
                 a, c = f"Нет. {reason} Значит, {e[j]} {neg}, чем {e[i]}.", chk("нет", none=["да"])
-        if self.rng.random() < 0.3:          # подтверждение — только после явного «Задача:», иначе модель
-            turns = [("user", self.pick(TASK_LEADS) + facts),      # отвечает «Понял.» на любую просьбу
-                     ("bot", self.pick(TASK_ACKS)), ("user", q)]
-        else:
-            turns = [("user", facts + " " + q)]
-        return row(turns + [("bot", a)], "шаблон:логика: цепочка", c)
+        # Условие и вопрос — одной репликой. Вариант «условие → бот: "Понял условие" → вопрос» убран: модель
+        # начинала отвечать «Понял условие. Какой вопрос?» на любое сообщение без вопроса («Я купил телефон.»).
+        lead = self.pick(TASK_LEADS) if self.rng.random() < 0.2 else ""
+        return row([("user", lead + facts + " " + q), ("bot", a)], "шаблон:логика: цепочка", c)
 
     # ---------- логика: силлогизмы про выдуманные группы (знания не помогут — только вывод)
     def syllogism(self, train: bool) -> dict:
@@ -1127,11 +1125,8 @@ class Gen:
             c = chk("неизвестно", "не знаю", none=["да"])
         if self.rng.random() < 0.5:
             facts.reverse()
-        if self.rng.random() < 0.3:
-            turns = [("user", self.pick(TASK_LEADS) + " ".join(facts)), ("bot", self.pick(TASK_ACKS)), ("user", q)]
-        else:
-            turns = [("user", " ".join(facts) + " " + q)]
-        return row(turns + [("bot", a)], "шаблон:логика: силлогизм", c)
+        lead = self.pick(TASK_LEADS) if self.rng.random() < 0.2 else ""      # одной репликой (см. logic_chain)
+        return row([("user", lead + " ".join(facts) + " " + q), ("bot", a)], "шаблон:логика: силлогизм", c)
 
     # ---------- задачи со счётом: следить за тем, что было в разговоре, и считать по шагам
     def word_problem(self, train: bool) -> dict:
@@ -1159,11 +1154,9 @@ class Gen:
                        f"Сколько {forms[2]} {word}?", f"Так сколько у меня {forms[2]}?",
                        f"Посчитай, сколько у меня {forms[2]}."]) if train else f"Сколько теперь у меня {forms[2]}?"
         ans = f"{steps} Значит, {word} {res} {plural(res, forms)}."
-        if self.rng.random() < 0.3:
-            turns = [("user", self.pick(TASK_LEADS) + " ".join(story)), ("bot", self.pick(TASK_ACKS)), ("user", q)]
-        else:
-            turns = [("user", " ".join(story) + " " + q)]
-        return row(turns + [("bot", ans)], "шаблон:задачи", chk(str(res), tail="значит"))
+        lead = self.pick(TASK_LEADS) if self.rng.random() < 0.2 else ""      # одной репликой (см. logic_chain)
+        return row([("user", lead + " ".join(story) + " " + q), ("bot", ans)], "шаблон:задачи",
+                   chk(str(res), tail="значит"))
 
 
 # ---------- данные и грамматика для новых навыков
@@ -1417,7 +1410,6 @@ def concept_question(w: str, info: dict, rng: random.Random, train: bool,
 
 
 TASK_LEADS = ["Задача: ", "Слушай задачу: ", "Задача на логику: ", "Реши задачу: "]
-TASK_ACKS = ["Понял условие. Что нужно узнать?", "Условие понял. Какой вопрос?"]
 RELATIONS = [("выше", "ниже", "по росту"), ("старше", "младше", "по возрасту"), ("быстрее", "медленнее", "по скорости"),
              ("сильнее", "слабее", "по силе"), ("тяжелее", "легче", "по весу")]
 SYLLOGISM_PROPS = [("любят снег", "любит снег", "не любит снег"), ("умеют петь", "умеет петь", "не умеет петь"),
@@ -1469,7 +1461,7 @@ TEMPLATE_PLAN = [
     ("definition", 2500, 40), ("person", 500, 15), ("repeat", 2000, 30), ("gibberish", 600, 0), ("foreign", 500, 0),
     ("unknown_fact", 2500, 30),           # в конце: проверочные задачи выше не меняются
     # Новые навыки (тоже в конце — проверочные задачи выше остаются прежними):
-    ("new_word_unknown", 2500, 30), ("new_word", 7000, 90), ("new_word_two", 2500, 40),
+    ("new_word_unknown", 2000, 30), ("new_word", 7000, 90), ("new_word_two", 2500, 40),
     ("logic_chain", 3500, 45), ("syllogism", 3500, 45), ("word_problem", 2500, 30),
     ("new_word_reference", 2500, 30),
 ]
