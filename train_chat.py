@@ -739,6 +739,11 @@ def check_reply(text: str, check: Optional[dict]) -> Optional[bool]:
     if not check:
         return None
     t = norm_text(text)
+    if check.get("tail"):                      # проверяем только вывод — текст после последнего «значит»
+        i = t.rfind(norm_text(check["tail"]))
+        if i < 0:
+            return False
+        t = t[i + len(norm_text(check["tail"])):]
     ok = any(_key_pattern(a).search(t) for a in check.get("any", []) if norm_text(a))
     if ok and check.get("none"):
         ok = not any(_key_pattern(a).search(t) for a in check["none"] if norm_text(a))
@@ -989,6 +994,50 @@ def answer(model, tok, chat: bool, turns, greedy: bool = True, generator=None, g
     return re.sub(r"^\s*[-–—]\s*", "", text)
 
 
+NEUTRAL_QUESTIONS = ("Привет!", "Расскажи что-нибудь.", "Что нового?")
+
+
+def answer_rerank(model, tok, turns, n: int = 8, alpha: float = 1.0, temperature: float = 0.8, max_new: int = 64,
+                  generator=None, details: bool = False):
+    """
+    «Гипотезы и самопроверка» без дообучения. Модель пишет несколько вариантов ответа (жадный + n − 1
+    случайных), а потом сама проверяет каждый вариант двумя вопросами:
+      • насколько ответ вероятен после ЭТОГО вопроса (средний log p на токен — без выгоды коротким ответам);
+      • насколько он вероятнее после этого вопроса, чем после нейтральных («Привет!», ...): отвечает ли он
+        именно на этот вопрос, а не «вообще» (PMI). Узнавать свой вопрос по ответу модель умеет гораздо
+        лучше, чем сразу писать верный ответ (84–89% против 45%), и этот разрыв здесь и используется.
+    Итог = правдоподобие + alpha · PMI. Незаконченные реплики отбрасываются. Стоит ~n проходов генерации.
+    """
+    ctx = prompt_ids(tok, turns)
+    cands = [generate_replies(model, tok, ctx, n=1, max_new_tokens=max_new, temperature=0,
+                              repetition_penalty=1.0)[0]]
+    if n > 1:
+        cands += generate_replies(model, tok, ctx, n=n - 1, max_new_tokens=max_new, temperature=temperature,
+                                  generator=generator)
+    uniq, seen = [], set()
+    for c in cands:
+        if c and c[-1] == tok.nl_id and tuple(c) not in seen:
+            seen.add(tuple(c))
+            uniq.append(c)
+    uniq = uniq or [cands[0]]
+    seqs = [(ctx + c, [0] * len(ctx) + [1] * len(c)) for c in uniq]
+    for q in NEUTRAL_QUESTIONS:
+        nctx = prompt_ids(tok, list(turns[:-1]) + [("user", q)])
+        seqs += [(nctx + c, [0] * len(nctx) + [1] * len(c)) for c in uniq]
+    sc = score_sequences(model, seqs, tok.nl_id, batch_size=64)
+    k = len(uniq)
+    mean_lp = sc[:, 0] / np.maximum(sc[:, 1], 1)
+    lp = mean_lp[:k]
+    neutral = mean_lp[k:].reshape(len(NEUTRAL_QUESTIONS), k).mean(axis=0)
+    score = lp + alpha * (lp - neutral)
+    best = int(np.argmax(score))
+    text = reply_text(tok, uniq[best])
+    if details:
+        return text, [(reply_text(tok, c), float(l), float(l - u), float(v))      # (ответ, log p, PMI, итог)
+                      for c, l, u, v in zip(uniq, lp, neutral, score)]
+    return text
+
+
 def choice_accuracy(model, tok, chat: bool, rows: List[dict]) -> Dict[str, float]:
     """
     Выбор ответа из 5: правильный + 4 ответа на другие вопросы. Две оценки:
@@ -1042,8 +1091,14 @@ def cmd_eval(args: argparse.Namespace) -> None:
         t0 = time.time()
         per_cat: Dict[str, List[int]] = {}
         probe_out = []
+        gen = torch.Generator().manual_seed(args.seed)
         for p in probes:
-            text = answer(model, tok, chat, p["turns"], guidance=args.guidance if chat else 0.0)
+            if chat and args.rerank > 1:
+                text = answer_rerank(model, tok, p["turns"], n=args.rerank, alpha=args.rerank_alpha,
+                                     max_new=args.max_new, generator=gen)
+            else:
+                text = answer(model, tok, chat, p["turns"], guidance=args.guidance if chat else 0.0,
+                              max_new=args.max_new)
             ok = bool(check_reply(text, p["check"]))
             per_cat.setdefault(p["cat"], []).append(int(ok))
             probe_out.append({"cat": p["cat"], "q": p["turns"][-1][1], "reply": text, "ok": ok})
@@ -1229,6 +1284,12 @@ def main(argv: Optional[List[str]] = None) -> None:
     e.add_argument("--choice-items", type=int, default=600)
     e.add_argument("--open-items", type=int, default=200)
     e.add_argument("--guidance", type=float, default=0.0)
+    e.add_argument("--rerank", type=int, default=0,
+                   help="гипотезы и самопроверка: столько вариантов ответа, лучший — по самопроверке (0 — выкл)")
+    e.add_argument("--rerank-alpha", type=float, default=1.0, help="вес «отвечает ли именно на этот вопрос» (PMI)")
+    e.add_argument("--seed", type=int, default=0)
+    e.add_argument("--max-new", type=int, default=64,
+                   help="предел длины ответа в токенах (64 — как в браузере; рассуждению нужно больше 40)")
     e.add_argument("--probes", type=int, default=0, help="сколько задач с проверкой (0 — все)")
     e.add_argument("--showcase", type=int, default=0, help="сколько примеров диалога (0 — все)")
     e.add_argument("--print-showcase", type=int, default=12)
@@ -1237,7 +1298,7 @@ def main(argv: Optional[List[str]] = None) -> None:
     c = sub.add_parser("chat", help="диалог в консоли")
     c.add_argument("--ckpt", default="slr_net_chat_ru_mini.npz")
     c.add_argument("--prompt", default=None, help="один вопрос без интерактивного режима")
-    c.add_argument("--max-new-tokens", type=int, default=48)
+    c.add_argument("--max-new-tokens", type=int, default=64)
     c.add_argument("--temperature", type=float, default=0.7)
     c.add_argument("--top-k", type=int, default=40)
     c.add_argument("--top-p", type=float, default=0.9)
