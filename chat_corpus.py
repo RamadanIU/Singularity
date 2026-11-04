@@ -1033,6 +1033,22 @@ class Gen:
         q, a, c, _ = concept_question(w, info, self.rng, train, other_cat=other["cat"])
         return row(turns + [("user", q), ("bot", a)], "шаблон:два новых слова", c)
 
+    # ---------- справка из словаря: программа подложила определение — ответить по нему (а не по памяти)
+    def new_word_reference(self, train: bool, defs) -> dict:
+        w = self.pick(NONCE_TRAIN if train else NONCE_TEST)
+        if train:
+            ans = self.pick(defs)[2]
+            body = ans.split(" — ", 1)[1].split(". ")[0].rstrip(".") + "."
+            longest = max(re.findall(r"[а-яё]+", body.lower())[1:] or ["это"], key=len)   # без «это»
+            key = longest[:max(4, len(longest) - 2)]
+        else:
+            body, key = self.pick(REFERENCE_TEST_DEFS)
+        q = self.pick([f"Что такое {w}?", f"Что значит слово «{w}»?", f"Объясни, что такое {w}.", f"Ты знаешь, что такое {w}?"]) \
+            if train else f"Расскажи, что такое {w}."
+        turns = self.distract(1) if self.rng.random() < 0.3 else []
+        turns += [("user", reference_turn(w, body, q)), ("bot", f"{cap(w)} — {body}")]
+        return row(turns, "шаблон:справка", chk(*key.split(",")))
+
     # ---------- логика: цепочка сравнений (транзитивность) с рассуждением вслух
     def logic_chain(self, train: bool) -> dict:
         pos, neg, measure = self.pick(RELATIONS)
@@ -1193,6 +1209,28 @@ NONCE_TEST = """
 лирбум шмопут грософ клурмуд блаписа броваб снылпол звезана бледус жырбем шмуфа бролпа кырбем звубуп нефыса
 крирбум клудун штозида снартам шинтил груреда жылпа стынтен жифез клелпа вартум пускена
 """.split()
+
+
+# Определения, которых нет ни в обучении, ни в шаблонах: проверка, что модель пересказывает именно справку
+REFERENCE_TEST_DEFS = [
+    ("это прибор, который измеряет давление воздуха.", "давлени,прибор"),
+    ("это старинная лодка с одним большим парусом.", "лодк,парус"),
+    ("это густой суп из свёклы и капусты.", "суп,свекл"),
+    ("это человек, который чинит обувь.", "обув,чинит"),
+    ("это маленький остров посреди реки.", "остров"),
+    ("это игра, в которой нужно угадать слово по картинке.", "игра,угада"),
+    ("это ткань, которую делают из шерсти овец.", "ткан,шерст"),
+    ("это сладкая булочка с изюмом.", "булочк,изюм"),
+    ("это песня, которую поют перед сном детям.", "песн,сном"),
+    ("это дорожка из камней через ручей.", "дорожк,камн"),
+    ("это шкаф для хранения книг.", "шкаф,книг"),
+    ("это ветер, который дует с моря на сушу.", "ветер,моря"),
+]
+
+
+def reference_turn(word: str, definition: str, question: str) -> str:
+    """Реплика пользователя со справкой из словаря. Тот же формат подставляет train_chat.py chat --dictionary."""
+    return f"Справка: {cap(word)} — {definition} {question}"
 
 
 def nonce_gender(w: str) -> str:
@@ -1410,9 +1448,10 @@ TEMPLATE_PLAN = [
     # Новые навыки (тоже в конце — проверочные задачи выше остаются прежними):
     ("new_word_unknown", 2500, 30), ("new_word", 7000, 90), ("new_word_two", 2500, 40),
     ("logic_chain", 3500, 45), ("syllogism", 3500, 45), ("word_problem", 2500, 30),
+    ("new_word_reference", 2500, 30),
 ]
 # Их проверки не дублируются в «небрежном вводе»: так эта категория совпадает с прежним набором задач
-NEW_SKILL_SRC = ("шаблон:новое слово", "шаблон:два новых слова", "шаблон:логика", "шаблон:задачи")
+NEW_SKILL_SRC = ("шаблон:новое слово", "шаблон:два новых слова", "шаблон:логика", "шаблон:задачи", "шаблон:справка")
 
 
 # =============================================================================
@@ -1568,7 +1607,7 @@ def build_dataset(mined: List[dict], seed: int = 11, n_compose: int = 30000, min
         [b.answers[0] for b in singles if len(b.answers[0].split()) <= 6]
     phrases_test = [r["turns"][1][1] for r in m_val if 2 <= len(r["turns"][1][1].split()) <= 6] or phrases_train[:20]
     extra = {"opposite": (opp,), "definition": (defs,), "person": (people,), "opinion": (_table(TOPICS),),
-             "howto": (_table(HOWTO),)}
+             "howto": (_table(HOWTO),), "new_word_reference": (defs,)}
     template_train: List[dict] = []
     for name, n_train, n_test in TEMPLATE_PLAN:
         fn = getattr(g, name)

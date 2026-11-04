@@ -201,6 +201,9 @@ def test_new_skills_templates_answer_from_context():
             for fn in (g.new_word_two, g.logic_chain, g.syllogism, g.word_problem):
                 r = fn(train)
                 assert T.check_reply(r["turns"][-1][1], r["check"]), r
+            r = g.new_word_reference(train, C._table(C.DEFINITIONS))
+            assert r["turns"][-1][0] == "bot" and r["turns"][-2][1].startswith("Справка: ")
+            assert T.check_reply(r["turns"][-1][1], r["check"]), r
     # задача со счётом: ответ — верная арифметика по условию
     for _ in range(100):
         r = g.word_problem(True)
@@ -216,9 +219,26 @@ def test_new_skills_held_out_from_training():
         assert w not in text, w                                           # отложенные выдуманные слова не учим
     cats = {p["cat"] for p in data["probes"]}
     for cat in ("шаблон:новое слово", "шаблон:новое слово: вывод", "шаблон:новое слово: не знаю",
-                "шаблон:два новых слова", "шаблон:логика: цепочка", "шаблон:логика: силлогизм", "шаблон:задачи"):
+                "шаблон:два новых слова", "шаблон:логика: цепочка", "шаблон:логика: силлогизм", "шаблон:задачи",
+                "шаблон:справка"):
         assert cat in cats, cat
     assert not any(p.get("from", "").startswith(C.NEW_SKILL_SRC) for p in data["probes"])
+
+
+def test_external_dictionary_lookup(tmp_path):
+    path = tmp_path / "dict.txt"
+    path.write_text("# комментарий\nбарометр — прибор, который измеряет давление воздуха\n"
+                    "фуникулёр | это вагончик на канате.\nмаяк — это башня с огнём.\n", encoding="utf-8")
+    d = T.load_dictionary(str(path))
+    assert d["барометр"] == ("барометр", "это прибор, который измеряет давление воздуха.")
+    assert T.dictionary_hit("Где используют барометры?", d)[0] == "барометр"      # падеж/число
+    assert T.dictionary_hit("Что такое фуникулер?", d)[0] == "фуникулёр"          # ё/е
+    assert T.dictionary_hit("Я видел маяк", d)[0] == "маяк"
+    assert T.dictionary_hit("Как дела?", d) is None
+    shipped = T.load_dictionary(os.path.join(ROOT, "dictionary_example.txt"))
+    known = {r.split("|")[0] for r in C.DEFINITIONS.strip().splitlines()}
+    assert len(shipped) >= 20 and not set(shipped) & known                       # слова, которых модель не учила
+    assert C.reference_turn("барометр", "это прибор.", "Что это?") == "Справка: Барометр — это прибор. Что это?"
 
 
 def test_tiny_pipeline_sft_align_export_chat(tmp_path, tiny_base, tok, capsys):

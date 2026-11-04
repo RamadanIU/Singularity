@@ -1148,12 +1148,54 @@ def cmd_eval(args: argparse.Namespace) -> None:
 # 6) CHAT  7) EXPORT
 # =============================================================================
 
+def load_dictionary(path: str) -> Dict[str, Tuple[str, str]]:
+    """
+    Внешний словарь: строки «слово — определение» (или «слово | определение»), # — комментарий.
+    Модель не хранит словарь в весах: определение подкладывается в разговор, когда слово встречается
+    в вопросе, а модель обучена отвечать по такой справке (chat_corpus.py, шаблон «справка»).
+    """
+    out: Dict[str, Tuple[str, str]] = {}
+    with open(path, encoding="utf-8") as f:
+        for line in f:
+            line = line.strip()
+            if not line or line.startswith("#"):
+                continue
+            parts = re.split(r"\s+[—–-]\s+|\s*\|\s*", line, maxsplit=1)
+            if len(parts) != 2 or not parts[0] or not parts[1]:
+                continue
+            word, definition = parts[0].strip(), parts[1].strip()
+            if not definition.lower().startswith("это "):
+                definition = "это " + definition[:1].lower() + definition[1:]
+            if not definition.endswith((".", "!", "?")):
+                definition += "."
+            out[word.lower().replace("ё", "е")] = (word, definition)
+    return out
+
+
+def dictionary_hit(text: str, dictionary: Dict[str, Tuple[str, str]]) -> Optional[Tuple[str, str]]:
+    """Первое слово сообщения, которое есть в словаре (с грубым учётом падежей: «синхрофазотрона»)."""
+    for w in re.findall(r"[а-яёa-z-]+", text.lower().replace("ё", "е")):
+        if w in dictionary:
+            return dictionary[w]
+        for cut in (1, 2):                     # окончание: астролябию → астролябия, барометра → барометр
+            stem = w[:-cut] if len(w) - cut >= 4 else None
+            if not stem:
+                continue
+            for head in (stem, stem + "а", stem + "я", stem + "ь", stem + "й"):
+                if head in dictionary and len(head) >= 5:
+                    return dictionary[head]
+    return None
+
+
 def cmd_chat(args: argparse.Namespace) -> None:
     import torch
     torch.manual_seed(args.seed)
     model, tok, chat = load_chat_model(args.ckpt, torch.device("cpu"), allow_base=False)
     g = torch.Generator().manual_seed(args.seed)
     history: List[Tuple[str, str]] = []
+    dictionary = load_dictionary(args.dictionary) if args.dictionary else {}
+    if dictionary:
+        print(f"Словарь: {len(dictionary):,} слов из {args.dictionary}")
     print("Диалог с SLR-Net (пустая строка — выход, /новый — начать заново)")
     while True:
         try:
@@ -1165,6 +1207,11 @@ def cmd_chat(args: argparse.Namespace) -> None:
         if text == "/новый":
             history = []
             continue
+        hit = dictionary_hit(text, dictionary) if dictionary else None
+        if hit:
+            import chat_corpus as C
+            print(f"   (справка из словаря: {hit[0]} — {hit[1]})")
+            text = C.reference_turn(hit[0], hit[1], text)
         history.append(("user", text))
         ctx = prompt_ids(tok, history)
         while len(ctx) > args.context and len(history) > 1:      # длинная история: забываем начало
@@ -1305,6 +1352,8 @@ def main(argv: Optional[List[str]] = None) -> None:
     c.add_argument("--repetition-penalty", type=float, default=1.1)
     c.add_argument("--guidance", type=float, default=0.0, help="удержание темы (0 — выкл, 1–2 — сильнее)")
     c.add_argument("--context", type=int, default=240)
+    c.add_argument("--dictionary", default=None,
+                   help="внешний словарь «слово — определение»: определение подкладывается в разговор")
     c.add_argument("--seed", type=int, default=0)
 
     x = sub.add_parser("export", help="упаковать веса чат-модели")
