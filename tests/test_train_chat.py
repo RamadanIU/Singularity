@@ -225,6 +225,18 @@ def test_new_skills_held_out_from_training():
     assert not any(p.get("from", "").startswith(C.NEW_SKILL_SRC) for p in data["probes"])
 
 
+def test_copy_mechanism_continues_context_words(tok):
+    ctx = T.prompt_ids(tok, [("user", "Я живу в Костроме, мою кошку зовут Ватрушка."), ("bot", "Здорово!"),
+                             ("user", "Где я живу?")])
+    words = T.context_words(tok, ctx)
+    kostroma = tok.sp.encode(" Костроме")
+    assert kostroma in words                                       # многокусочковые слова разговора найдены
+    assert T.copy_bonus(tok, words, kostroma[:1]) == {kostroma[1]: 1.0}       # «▁Ко» → следующий кусочек
+    assert T.copy_bonus(tok, words, kostroma[:2]) == {kostroma[2]: 1.0}
+    assert T.copy_bonus(tok, words, tok.sp.encode(" Ты живёшь в")) == {}      # нет начатого слова из разговора
+    assert T.copy_bonus(tok, words, kostroma + tok.sp.encode(".")) == {}      # слово закончено
+
+
 def test_external_dictionary_lookup(tmp_path):
     path = tmp_path / "dict.txt"
     path.write_text("# комментарий\nбарометр — прибор, который измеряет давление воздуха\n"
