@@ -397,6 +397,11 @@
         </div>
         <div id="miniReadyBox" class="hidden space-y-1">
           <div id="miniStatusText" class="text-[11px] text-emerald-300 leading-snug">✅ mini готова</div>
+          <div id="miniUpdateBox" class="hidden mini-row text-[11px] text-amber-200 leading-snug">
+            В браузере сохранена старая версия собеседника. На GitHub есть новая: логика, «не знаю — объясни»,
+            ответ по объяснению.
+            <button id="miniUpdateBtn" type="button" class="mini-btn primary">⬇ Обновить (8.9 МБ)</button>
+          </div>
           <div id="miniUpgradeBox" class="hidden mini-row text-[11px] text-amber-200 leading-snug">
             Загружена старая модель-продолжатель субтитров: она не отвечает на вопросы, а дописывает сцену.
             <button id="miniUpgradeBtn" type="button" class="mini-btn primary">⬇ Скачать собеседника</button>
@@ -3405,8 +3410,17 @@
       keepOnTrim: 96,
       maxNewTokens: 64,
       chatKeepOnTrim: 160,   // собеседник: сколько последних токенов разговора оставить (целыми репликами)
-      chatMaxNewTokens: 48
+      chatMaxNewTokens: 64   // ответы с рассуждением («Рассуждаю: … Значит, …») длиннее 48 токенов
     };
+    // Какие веса собеседника ожидает эта страница. Если в памяти браузера лежат другие (старые), в панели mini
+    // появляется кнопка «Обновить»: страница не скачивает 8.9 МБ сама, без спроса (мобильный интернет).
+    const MINI_CHAT_VERSION = { step: 2105, bestVal: 1.3461, title: "логика, «не знаю — объясни», ответ по объяснению" };
+    function miniChatOutdated(bundle) {
+      if (!bundle || !bundle.chat) return false;
+      const m = bundle.meta || {};
+      return m.step !== MINI_CHAT_VERSION.step || m.bestVal === null ||
+        Math.abs(m.bestVal - MINI_CHAT_VERSION.bestVal) > 1e-3;
+    }
     const miniState = {
       bundle: null,          // { model, tokenizer, cfg, meta }
       loading: false,
@@ -3500,6 +3514,7 @@
       document.getElementById("miniLinesLabel").classList.toggle("hidden", chat);
       document.getElementById("miniNewChatBtn").classList.toggle("hidden", !chat);
       document.getElementById("miniUpgradeBox").classList.toggle("hidden", !loaded || chat);
+      document.getElementById("miniUpdateBox").classList.toggle("hidden", !loaded || !miniChatOutdated(miniState.bundle));
       const input = document.getElementById("chatInputField");
       if (input) {
         input.placeholder = !mini ? "Напишите вопрос на русском..."
@@ -3628,6 +3643,7 @@
       try {
         miniSetProgress(0.1, "Загрузка весов из памяти браузера…");
         await miniLoadFromBuffer(buf, "из памяти браузера", { cache: false, progressStart: 0.1 });
+        if (miniChatOutdated(miniState.bundle)) showToast("Есть новая версия собеседника — кнопка «Обновить» в панели mini");
         return true;
       } catch (e) {
         try { await miniCacheDelete(); } catch (_) { /* ничего */ }
@@ -3925,6 +3941,7 @@
         });
       }
       document.getElementById("miniUpgradeBtn").addEventListener("click", () => miniDownload());
+      document.getElementById("miniUpdateBtn").addEventListener("click", () => miniDownload());
       document.getElementById("miniNewChatBtn").addEventListener("click", () => {
         if (miniState.busy) return;
         miniResetContext();
