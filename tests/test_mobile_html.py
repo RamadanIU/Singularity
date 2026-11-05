@@ -7,6 +7,7 @@
 import os
 import sys
 
+import numpy as np
 import pytest
 
 sync_api = pytest.importorskip("playwright.sync_api")
@@ -491,6 +492,38 @@ def test_chat_model_in_browser_matches_pytorch(chat_page):
             return out;
         }""", [ctx, 24])
         assert js == ref, (turns, tok.decode(js), tok.decode(ref))
+
+
+def test_current_chat_weights_need_no_update_and_long_replies_fit(chat_page):
+    """Страница знает, какие веса собеседника актуальны (иначе предлагает «Обновить»), и даёт ответу 64 токена:
+    рассуждение «Рассуждаю: … Значит, …» длиннее прежних 48."""
+    with np.load(CHAT_NPZ) as z:
+        step, best = int(z["meta.step"][0]), float(z["meta.best_val"][0])
+    assert chat_page.evaluate("() => [MINI_CHAT_VERSION.step, MINI_CHAT_VERSION.bestVal]") == [step, pytest.approx(best, abs=1e-3)]
+    assert chat_page.evaluate("() => miniChatOutdated(miniState.bundle)") is False
+    assert chat_page.evaluate("() => document.getElementById('miniUpdateBox').classList.contains('hidden')")
+    assert chat_page.evaluate("() => MINI_LIMITS.chatMaxNewTokens") >= 64
+
+
+def test_old_chat_weights_offer_update(browser, tmp_path):
+    """Если в браузере сохранены старые веса собеседника, страница предлагает их обновить."""
+    if not os.path.exists(CHAT_NPZ):
+        pytest.skip("нет файла весов slr_net_chat_ru_mini.npz")
+    old = tmp_path / "old_chat.npz"
+    with np.load(CHAT_NPZ) as z:
+        arrays = {k: z[k] for k in z.files}
+    arrays["meta.step"] = np.array([1200], dtype=np.int64)                # как у прежней версии собеседника
+    np.savez(old, **arrays)
+    pg = _open_page(browser)
+    try:
+        pg.click("#modeMiniBtn")
+        pg.set_input_files("#miniFileInput", str(old))
+        pg.wait_for_function("() => miniState.bundle !== null && !miniState.loading", timeout=60000)
+        assert pg.evaluate("() => miniChatOutdated(miniState.bundle)") is True
+        assert pg.evaluate("() => !document.getElementById('miniUpdateBox').classList.contains('hidden')")
+        assert pg.errors == []
+    finally:
+        pg.close()
 
 
 def test_chat_mode_keeps_dialogue_and_can_start_over(chat_page):
