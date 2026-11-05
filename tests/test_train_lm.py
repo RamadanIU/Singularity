@@ -79,6 +79,49 @@ def test_full_pipeline_prepare_train_export_sample(tmp_path, capsys):
     assert (a - b).abs().max() < 0.05 * a.abs().max()
 
 
+def test_init_drop_memory_and_compress_embedding_then_copytest(tmp_path, capsys):
+    """Готовую модель можно дообучать без памяти фактов и со сжатым при обучении эмбеддингом (--init + --set),
+    упаковать (эмбеддинг — полбайта на число) и проверить дословное копирование (copytest)."""
+    torch = pytest.importorskip("torch")
+    pytest.importorskip("sentencepiece")
+    corpus = tmp_path / "subs.txt"
+    lines = ["Привет! Как дела?", "Хорошо, спасибо.", "Куда ты идёшь?", "Домой, уже поздно.",
+             "Пойдём в кино завтра.", "Я не знаю, что сказать."]
+    corpus.write_text("\n".join(lines * 80), encoding="utf-8")
+    data, base, ft = tmp_path / "data", tmp_path / "base", tmp_path / "ft"
+    train_lm.main(["prepare", "--input", str(corpus), "--out", str(data), "--vocab-size", "300"])
+    common = ["--data", str(data), "--seq-len", "32", "--batch-size", "4", "--warmup", "1", "--eval-every", "100",
+              "--eval-batches", "2", "--save-every", "100", "--log-every", "1", "--sample-prompt", ""]
+    train_lm.main(["train", "--out", str(base), "--preset", "tiny", "--max-steps", "3"] + common)
+    train_lm.main(["train", "--out", str(ft), "--init", str(base / "last.pt"), "--max-steps", "3",
+                   "--set", "memory_keys=0", "embed_bits=4", "embed_group=32"] + common)
+    assert "изменено: {'memory_keys': 0, 'embed_bits': 4, 'embed_group': 32}" in capsys.readouterr().out
+    ref, _ = train_lm.load_model(str(base / "last.pt"), torch.device("cpu"))
+    new, _ = train_lm.load_model(str(ft / "last.pt"), torch.device("cpu"))
+    assert new.core.memory is None and new.config.embed_bits == 4
+    assert ref.core.memory is not None
+    packed = tmp_path / "ft.npz"
+    train_lm.main(["export", "--ckpt", str(ft / "last.pt"), "--out", str(packed)])
+    with np.load(packed) as z:
+        assert not any(k.startswith("core.memory") for k in z.files)
+        assert "tok_embeddings.weight" not in z.files
+        assert z["tok_embeddings.weight.qdata"].nbytes == ref.config.vocab_size * ref.config.d_model // 2
+    m2, _ = train_lm.load_model(str(packed), torch.device("cpu"))
+    with torch.no_grad():
+        assert torch.equal(m2.embedding_weight(), new.embedding_weight())
+    # без дообучения: та же модель, просто без памяти и с округлённым эмбеддингом
+    posthoc = tmp_path / "posthoc.npz"
+    train_lm.main(["export", "--ckpt", str(base / "last.pt"), "--out", str(posthoc), "--set", "memory_keys=0",
+                   "embed_bits=4", "embed_group=32"])
+    assert posthoc.stat().st_size < (tmp_path / "ft.npz").stat().st_size * 1.2
+    report = tmp_path / "copy.json"
+    train_lm.main(["copytest", "--ckpt", str(packed), str(posthoc), "--data", str(data), "--span", "8",
+                   "--gaps", "0", "4", "--n", "6", "--json", str(report)])
+    res = json.loads(report.read_text(encoding="utf-8"))
+    assert len(res["results"]) == 2 and set(res["results"][0]["by_distance"]) == {"8", "12"}
+    assert all(0.0 <= v["acc"] <= 1.0 for r in res["results"] for v in r["by_distance"].values())
+
+
 def test_tokenizer_proto_roundtrip(tmp_path):
     pytest.importorskip("sentencepiece")
     import sentencepiece as spm

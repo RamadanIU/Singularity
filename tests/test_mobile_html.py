@@ -571,3 +571,63 @@ def test_old_subtitle_model_still_works_and_offers_upgrade(browser):
         assert pg.errors == []
     finally:
         pg.close()
+
+
+# ------------------------------------------------------------------ новые модели: без памяти, сжатый эмбеддинг
+
+@pytest.mark.parametrize("bits", [4, 6])
+def test_model_without_memory_and_compressed_embedding_matches_pytorch(browser, tmp_path, bits):
+    """Модель нового вида (memory_keys = 0, эмбеддинг сжат до 4 или 6 бит, у каждой головы внимания свои
+    ключи, маленькое окно — чтобы кольцевой буфер ключей в браузере успел провернуться) считается в браузере
+    так же, как в PyTorch: распаковка эмбеддинга, выход по сжатой таблице, ядро мышления без памяти."""
+    torch = pytest.importorskip("torch")
+    pytest.importorskip("sentencepiece")
+    if not os.path.exists(MINI_NPZ):
+        pytest.skip("нет файла весов slr_net_subtitles_ru_mini.npz (нужен токенизатор)")
+    import base64
+    import json
+    sys.path.insert(0, ROOT)
+    import slr_net_engine as E
+    import train_lm
+
+    torch.manual_seed(bits)
+    cfg = E.make_config("tiny", vocab_size=8192, d_model=64, n_heads=4, n_kv_heads=4, window_size=12,
+                        ssm_headdim=32, d_state=16, memory_keys=0, embed_bits=bits, embed_group=32)
+    model = E.SLRNetLanguageModel(cfg).eval()
+    with torch.no_grad():                                   # «обученные» веса с разбросом, роутер пропускает токены
+        for p in model.parameters():
+            p.add_(torch.randn_like(p) * 0.02)
+        model.core.router.bias.fill_(0.5)
+    path = tmp_path / f"new_{bits}.npz"
+    with np.load(MINI_NPZ) as z:
+        proto = z["tokenizer_proto"]
+    np.savez_compressed(path, config=json.dumps(cfg.to_dict()), tokenizer_proto=proto, **model.export_packed())
+    ref_model, tok = train_lm.load_model(str(path), torch.device("cpu"))
+    assert ref_model.core.memory is None
+    ids = tok.encode(MINI_DIALOGUE)[:40]
+    cache = ref_model.init_cache(1)
+    with torch.no_grad():
+        ref = torch.stack([ref_model.step(torch.tensor([t]), cache)[0] for t in ids]).float().numpy()
+
+    pg = _open_page(browser)
+    try:
+        pg.click("#modeMiniBtn")
+        pg.set_input_files("#miniFileInput", str(path))
+        pg.wait_for_function("() => miniState.bundle !== null && !miniState.loading", timeout=60000)
+        js = pg.evaluate("""(ids) => {
+            const { model } = miniState.bundle;
+            const st = model.newState(), lg = new Float32Array(model.V), all = new Float32Array(ids.length * model.V);
+            const depths = ids.map((t, j) => { const d = model.step(t, st, lg); all.set(lg, j * model.V); return d; });
+            let bin = ""; const u8 = new Uint8Array(all.buffer);
+            for (let i = 0; i < u8.length; i += 0x8000) bin += String.fromCharCode.apply(null, u8.subarray(i, i + 0x8000));
+            return { logits: btoa(bin), depths, memory: model.memory, emb: Array.from(model.emb.subarray(0, 64)) };
+        }""", ids)
+        assert js["memory"] is None
+        assert np.array_equal(np.float32(js["emb"]), ref_model.tok_embeddings.weight[0].detach().numpy())
+        got = np.frombuffer(base64.b64decode(js["logits"]), dtype=np.float32).reshape(ref.shape)
+        assert (got.argmax(1) == ref.argmax(1)).mean() > 0.95
+        assert np.abs(got - ref).max() < 0.05 * np.abs(ref).max() and np.abs(got - ref).mean() < 0.01
+        assert sum(js["depths"]) > 0
+        assert pg.errors == []
+    finally:
+        pg.close()

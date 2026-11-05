@@ -688,6 +688,11 @@ def cmd_sft(args: argparse.Namespace) -> None:
     rng = random.Random(args.seed)
     device = LM.pick_device(args.device)
     model, tok, chat = load_chat_model(args.base, torch.device("cpu"))
+    if args.set:
+        # например, memory_keys=0 embed_bits=4: выбросить память фактов и дальше учиться со сжатым эмбеддингом
+        overrides = LM.config_overrides(args.set)
+        model = E.reconfigure(model, **overrides)
+        print(f"Настройки модели изменены: {overrides}")
     if not chat:
         model = extend_vocab(model, tok.vocab_size, init_from=tok.nl_id, seed=args.seed)
         print(f"Словарь расширен до {tok.vocab_size}: ролевые токены <user>={tok.user_id}, <bot>={tok.bot_id}")
@@ -704,6 +709,7 @@ def cmd_sft(args: argparse.Namespace) -> None:
     args.lr = args.lr or 5e-4
     optimizer = LM.build_optimizer(model, argparse.Namespace(weight_decay=args.weight_decay, lr=args.lr), device)
     train_model = torch.compile(model) if args.compile else model
+    _, autocast_ctx = LM.autocast_for(device, args.dtype)       # bf16 только для умножений; проверка — float32
     out = Path(args.out)
     out.mkdir(parents=True, exist_ok=True)
     with open(out / "config.json", "w", encoding="utf-8") as f:
@@ -736,7 +742,8 @@ def cmd_sft(args: argparse.Namespace) -> None:
             g["lr"] = lr
         x, y = pad_batch(batch, tok.nl_id)
         x, y = x.to(device), y.to(device)
-        _, loss, stats = train_model(x, y)
+        with autocast_ctx:
+            _, loss, stats = train_model(x, y)
         loss.backward()
         gn = torch.nn.utils.clip_grad_norm_(model.parameters(), args.grad_clip)
         optimizer.step()
@@ -1361,6 +1368,7 @@ def main(argv: Optional[List[str]] = None) -> None:
 
     s = sub.add_parser("sft", help="обучение с учителем по репликам бота")
     s.add_argument("--base", default="slr_net_subtitles_ru_mini.npz")
+    s.add_argument("--set", nargs="*", help="изменить настройки модели перед обучением: memory_keys=0 embed_bits=4")
     s.add_argument("--data", default="data/chat")
     s.add_argument("--out", default="runs/chat_sft")
     s.add_argument("--seq-len", type=int, default=256)
@@ -1376,6 +1384,8 @@ def main(argv: Optional[List[str]] = None) -> None:
     s.add_argument("--sample-every", type=int, default=1, help="печатать примеры каждые N проверок (0 — нет)")
     s.add_argument("--log-every", type=int, default=20)
     s.add_argument("--compile", action="store_true")
+    s.add_argument("--dtype", default="auto", choices=["auto", "bf16", "fp32"],
+                   help="bf16 на CPU с AMX — в ~2.5 раза быстрее (см. train_lm.py train --dtype)")
     s.add_argument("--device", default="auto")
     s.add_argument("--seed", type=int, default=1234)
 
