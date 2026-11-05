@@ -3,6 +3,7 @@
 import json
 import os
 import random
+import re
 import sys
 
 import numpy as np
@@ -162,6 +163,94 @@ def test_grammar_helpers():
     assert [C.years_word(n) for n in (1, 2, 5, 11, 21, 22, 25, 112)] == ["год", "года", "лет", "лет", "год", "года",
                                                                         "лет", "лет"]
     assert C.num_word(42) == "сорок два" and C.num_word(20) == "двадцать" and C.num_word(7) == "семь"
+
+
+def test_reply_check_tail_looks_only_at_the_conclusion():
+    c = {"any": ["Аня"], "none": ["Боря", "Вова"], "tail": "значит"}
+    assert T.check_reply("Рассуждаю: по росту Аня > Боря > Вова. Значит, выше всех Аня.", c)
+    assert not T.check_reply("Рассуждаю: по росту Аня > Боря > Вова. Значит, выше всех Вова.", c)
+    assert not T.check_reply("Выше всех Аня.", c)                         # нет вывода — не засчитываем
+    assert T.check_reply("Было 7, съел 3: 7 - 3 = 4. Значит, осталось 4 конфеты.", {"any": ["4"], "tail": "значит"})
+    assert not T.check_reply("Было 7, съел 3: 7 - 3 = 4. Значит, осталось 5 конфет.", {"any": ["4"], "tail": "значит"})
+
+
+def test_nonce_words_are_new_and_held_out():
+    assert len(C.NONCE_TRAIN) >= 300 and len(C.NONCE_TEST) >= 50
+    assert not set(C.NONCE_TRAIN) & set(C.NONCE_TEST)
+    known = {d.split("|")[0] for d in C.DEFINITIONS.strip().splitlines()}
+    assert not set(C.NONCE_TRAIN + C.NONCE_TEST) & known                  # не путаются с «настоящими» словами
+    assert C.nonce_plural("клуфа") == "клуфы" and C.nonce_plural("бармук") == "бармуки"
+    assert C.nonce_plural("стипос") == "стипосы" and C.nonce_gen("стипос") == "стипоса"
+    assert [C.plural(n, ("яблоко", "яблока", "яблок")) for n in (1, 3, 5, 11, 21, 24)] == \
+        ["яблоко", "яблока", "яблок", "яблок", "яблоко", "яблока"]
+
+
+def test_new_skills_templates_answer_from_context():
+    """Ответ в шаблонах новых навыков действительно следует из разговора (а не из памяти модели)."""
+    rng = random.Random(3)
+    g = C.Gen(rng, [[("user", "Как дела?"), ("bot", "Отлично!")]])
+    for train in (True, False):
+        words = C.NONCE_TRAIN if train else C.NONCE_TEST
+        for _ in range(200):
+            r = g.new_word(train)
+            ctx = " ".join(t[1] for t in r["turns"][:-1])
+            assert any(w in ctx.lower() for w in words)                     # слово объяснено в разговоре
+            assert T.check_reply(r["turns"][-1][1], r["check"]), r          # эталон проходит свою проверку
+            r = g.new_word_unknown(train)
+            assert T.check_reply(r["turns"][-1][1], r["check"]), r
+            for fn in (g.new_word_two, g.logic_chain, g.syllogism, g.word_problem):
+                r = fn(train)
+                assert T.check_reply(r["turns"][-1][1], r["check"]), r
+            r = g.new_word_reference(train, C._table(C.DEFINITIONS))
+            assert r["turns"][-1][0] == "bot" and r["turns"][-2][1].startswith("Справка: ")
+            assert T.check_reply(r["turns"][-1][1], r["check"]), r
+    # задача со счётом: ответ — верная арифметика по условию
+    for _ in range(100):
+        r = g.word_problem(True)
+        ans = r["turns"][-1][1]
+        for a, op, b, res in re.findall(r"(\d+) ([-+]) (\d+) = (\d+)", ans):
+            assert int(res) == (int(a) + int(b) if op == "+" else int(a) - int(b))
+
+
+def test_new_skills_held_out_from_training():
+    data = C.build_dataset([], seed=4, n_compose=200, scale=0.05)
+    text = json.dumps(data["sft_train"], ensure_ascii=False).lower()
+    for w in C.NONCE_TEST:
+        assert w not in text, w                                           # отложенные выдуманные слова не учим
+    cats = {p["cat"] for p in data["probes"]}
+    for cat in ("шаблон:новое слово", "шаблон:новое слово: вывод", "шаблон:новое слово: не знаю",
+                "шаблон:два новых слова", "шаблон:логика: цепочка", "шаблон:логика: силлогизм", "шаблон:задачи",
+                "шаблон:справка"):
+        assert cat in cats, cat
+    assert not any(p.get("from", "").startswith(C.NEW_SKILL_SRC) for p in data["probes"])
+
+
+def test_copy_mechanism_continues_context_words(tok):
+    ctx = T.prompt_ids(tok, [("user", "Я живу в Костроме, мою кошку зовут Ватрушка."), ("bot", "Здорово!"),
+                             ("user", "Где я живу?")])
+    words = T.context_words(tok, ctx)
+    kostroma = tok.sp.encode(" Костроме")
+    assert kostroma in words                                       # многокусочковые слова разговора найдены
+    assert T.copy_bonus(tok, words, kostroma[:1]) == {kostroma[1]: 1.0}       # «▁Ко» → следующий кусочек
+    assert T.copy_bonus(tok, words, kostroma[:2]) == {kostroma[2]: 1.0}
+    assert T.copy_bonus(tok, words, tok.sp.encode(" Ты живёшь в")) == {}      # нет начатого слова из разговора
+    assert T.copy_bonus(tok, words, kostroma + tok.sp.encode(".")) == {}      # слово закончено
+
+
+def test_external_dictionary_lookup(tmp_path):
+    path = tmp_path / "dict.txt"
+    path.write_text("# комментарий\nбарометр — прибор, который измеряет давление воздуха\n"
+                    "фуникулёр | это вагончик на канате.\nмаяк — это башня с огнём.\n", encoding="utf-8")
+    d = T.load_dictionary(str(path))
+    assert d["барометр"] == ("барометр", "это прибор, который измеряет давление воздуха.")
+    assert T.dictionary_hit("Где используют барометры?", d)[0] == "барометр"      # падеж/число
+    assert T.dictionary_hit("Что такое фуникулер?", d)[0] == "фуникулёр"          # ё/е
+    assert T.dictionary_hit("Я видел маяк", d)[0] == "маяк"
+    assert T.dictionary_hit("Как дела?", d) is None
+    shipped = T.load_dictionary(os.path.join(ROOT, "dictionary_example.txt"))
+    known = {r.split("|")[0] for r in C.DEFINITIONS.strip().splitlines()}
+    assert len(shipped) >= 20 and not set(shipped) & known                       # слова, которых модель не учила
+    assert C.reference_turn("барометр", "это прибор.", "Что это?") == "Справка: Барометр — это прибор. Что это?"
 
 
 def test_tiny_pipeline_sft_align_export_chat(tmp_path, tiny_base, tok, capsys):

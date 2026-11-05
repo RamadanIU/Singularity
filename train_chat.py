@@ -246,11 +246,77 @@ def _filter_logits(logits, temperature: float, top_k: int, top_p: float):
     return logits
 
 
+_WORD_INFO: Dict[int, Tuple[List[bool], List[bool]]] = {}
+COPY_START_MIN_ID = 1000          # первые кусочки с меньшим id — частые («▁Я», «▁Ко»): их не подталкиваем
+
+
+def _word_info(tok: ChatTokenizer) -> Tuple[List[bool], List[bool]]:
+    """Для каждого токена: начинает ли он слово («▁...») и есть ли в нём буквы."""
+    key = id(tok)
+    if key not in _WORD_INFO:
+        starts, letters = [], []
+        for i in range(tok.vocab_size):
+            piece = tok.sp.id_to_piece(i) if i < tok.sp_size else ""
+            starts.append(piece.startswith("\u2581"))
+            letters.append(any(ch.isalpha() for ch in piece))
+        _WORD_INFO[key] = (starts, letters)
+    return _WORD_INFO[key]
+
+
+def context_words(tok: ChatTokenizer, ids: Sequence[int]) -> List[List[int]]:
+    """Слова разговора как последовательности токенов (только слова из двух и больше кусочков: имена,
+    города, новые слова — то, что маленькая модель хуже всего переписывает дословно)."""
+    starts, letters = _word_info(tok)
+    words, cur = [], []
+    for t in ids:
+        t = int(t)
+        if t >= tok.sp_size or not letters[t]:
+            if len(cur) >= 2:
+                words.append(cur)
+            cur = []
+            continue
+        if starts[t] and cur:
+            if len(cur) >= 2:
+                words.append(cur)
+            cur = []
+        cur.append(t)
+    if len(cur) >= 2:
+        words.append(cur)
+    uniq = {tuple(w): w for w in words}
+    return list(uniq.values())
+
+
+def copy_bonus(tok: ChatTokenizer, words: List[List[int]], out: List[int]) -> Dict[int, float]:
+    """
+    «Механизм копирования» (как кэш-модель: Grave и др., 2017). Если начало текущего слова ответа совпадает с
+    началом слова из разговора, следующий кусочек этого слова получает бонус. Так «▁Ко» + «стро» → «ме»
+    (Костроме), а не «Количество». Слои Mamba плохо копируют дословно (Jelassi и др., 2024), а внимания в
+    модели мало — этот бонус восполняет недостающую «головку копирования» без изменения весов.
+    """
+    starts, letters = _word_info(tok)
+    j = len(out) - 1
+    while j >= 0 and letters[out[j]] and not starts[out[j]]:
+        j -= 1
+    if j < 0 or not (letters[out[j]] and starts[out[j]]):
+        return {}
+    partial = out[j:]                                   # текущее (недописанное) слово ответа
+    bonus: Dict[int, float] = {}
+    for w in words:
+        if len(w) > len(partial) and w[:len(partial)] == partial:
+            bonus[w[len(partial)]] = 1.0
+    return bonus
+    for w in words:
+        if len(w) > len(partial) and w[:len(partial)] == partial:
+            bonus[w[len(partial)]] = bonus.get(w[len(partial)], 0.0) + 1.0
+    return bonus
+
+
 def generate_batch(model, tok: ChatTokenizer, ctxs: Sequence[List[int]], n: int = 1, max_new_tokens: int = 40,
                    temperature: float = 0.7, top_k: int = 40, top_p: float = 0.9,
                    repetition_penalty: float = 1.1, guidance: float = 0.0,
                    unconds: Optional[Sequence[List[int]]] = None, stop_id: Optional[int] = None,
-                   banned: Optional[List[int]] = None, generator=None) -> List[List[List[int]]]:
+                   banned: Optional[List[int]] = None, generator=None, copy: float = 0.0,
+                   copy_start: float = 0.0) -> List[List[List[int]]]:
     """
     По n ответов на каждый из контекстов ctxs ОДИНАКОВОЙ длины — одним батчем (len(ctxs) * n строк).
     Остановка на <n> (конец реплики). Ролевые и служебные токены запрещены, пустая реплика тоже.
@@ -261,6 +327,9 @@ def generate_batch(model, tok: ChatTokenizer, ctxs: Sequence[List[int]], n: int 
     ответ без последнего вопроса (unconds, тоже одинаковой длины), и итоговые логиты
         l = l(ответ | вопрос) + guidance * (l(ответ | вопрос) − l(ответ | без вопроса))
     усиливают то, что следует именно из вопроса. Стоит второго прохода сети.
+
+    copy > 0 — «механизм копирования» (см. copy_bonus): следующий кусочек слова из разговора получает бонус
+    copy к логиту. copy_start > 0 — бонус первым кусочкам редких многокусочковых слов разговора (имена, новые слова).
     """
     import torch
     stop_id = tok.nl_id if stop_id is None else stop_id
@@ -289,11 +358,20 @@ def generate_batch(model, tok: ChatTokenizer, ctxs: Sequence[List[int]], n: int 
             ucache, ulogits, _ = prefill(unconds)
         out: List[List[int]] = [[] for _ in range(B)]
         done = torch.zeros(B, dtype=torch.bool, device=dev)
+        words = [context_words(tok, ctxs[i // n]) for i in range(B)] if (copy or copy_start) else None
+        starts_bonus = [sorted({w[0] for w in ws if w[0] >= COPY_START_MIN_ID}) for ws in words] if copy_start else None
         ban = None
         for step in range(max_new_tokens):
             lg = logits.float()
             if use_g:
                 lg = lg + guidance * (lg - ulogits.float())
+            if words is not None:
+                for i in torch.nonzero(~done).flatten().tolist():
+                    if copy:
+                        for t, v in copy_bonus(tok, words[i], out[i]).items():
+                            lg[i, t] += copy * v
+                    if copy_start and starts_bonus[i]:
+                        lg[i, starts_bonus[i]] += copy_start
             if repetition_penalty != 1.0 and history.shape[1]:
                 seen = torch.gather(lg, 1, history)
                 seen = torch.where(seen > 0, seen / repetition_penalty, seen * repetition_penalty)
@@ -326,12 +404,13 @@ def generate_replies(model, tok: ChatTokenizer, ctx_ids: List[int], n: int = 1, 
                      temperature: float = 0.7, top_k: int = 40, top_p: float = 0.9,
                      repetition_penalty: float = 1.1, guidance: float = 0.0,
                      uncond_ids: Optional[List[int]] = None, stop_id: Optional[int] = None,
-                     banned: Optional[List[int]] = None, generator=None) -> List[List[int]]:
+                     banned: Optional[List[int]] = None, generator=None, copy: float = 0.0,
+                     copy_start: float = 0.0) -> List[List[int]]:
     """n ответов на один контекст (см. generate_batch)."""
     return generate_batch(model, tok, [ctx_ids], n=n, max_new_tokens=max_new_tokens, temperature=temperature,
                           top_k=top_k, top_p=top_p, repetition_penalty=repetition_penalty, guidance=guidance,
                           unconds=[uncond_ids] if uncond_ids else None, stop_id=stop_id, banned=banned,
-                          generator=generator)[0]
+                          generator=generator, copy=copy, copy_start=copy_start)[0]
 
 
 def reply_text(tok: ChatTokenizer, ids: List[int]) -> str:
@@ -739,6 +818,11 @@ def check_reply(text: str, check: Optional[dict]) -> Optional[bool]:
     if not check:
         return None
     t = norm_text(text)
+    if check.get("tail"):                      # проверяем только вывод — текст после последнего «значит»
+        i = t.rfind(norm_text(check["tail"]))
+        if i < 0:
+            return False
+        t = t[i + len(norm_text(check["tail"])):]
     ok = any(_key_pattern(a).search(t) for a in check.get("any", []) if norm_text(a))
     if ok and check.get("none"):
         ok = not any(_key_pattern(a).search(t) for a in check["none"] if norm_text(a))
@@ -974,19 +1058,65 @@ def base_prompt_ids(tok: ChatTokenizer, turns) -> List[int]:
 
 
 def answer(model, tok, chat: bool, turns, greedy: bool = True, generator=None, guidance: float = 0.0,
-           max_new: int = 40) -> str:
+           max_new: int = 40, copy: float = 0.0, copy_start: float = 0.0) -> str:
     if chat:
         ctx = prompt_ids(tok, turns)
         uncond = prompt_ids(tok, list(turns[:-1])) if guidance > 0 else None
         ids = generate_replies(model, tok, ctx, n=1, max_new_tokens=max_new, temperature=0 if greedy else 0.7,
                                guidance=guidance, uncond_ids=uncond, generator=generator,
-                               repetition_penalty=1.0 if greedy else 1.1)[0]
+                               repetition_penalty=1.0 if greedy else 1.1, copy=copy, copy_start=copy_start)[0]
     else:
         ids = generate_replies(model, tok, base_prompt_ids(tok, turns), n=1, max_new_tokens=max_new,
                                temperature=0 if greedy else 0.7, generator=generator,
                                repetition_penalty=1.0 if greedy else 1.1)[0]
     text = reply_text(tok, ids)
     return re.sub(r"^\s*[-–—]\s*", "", text)
+
+
+NEUTRAL_QUESTIONS = ("Привет!", "Расскажи что-нибудь.", "Что нового?")
+
+
+def answer_rerank(model, tok, turns, n: int = 8, alpha: float = 1.0, temperature: float = 0.8, max_new: int = 64,
+                  generator=None, details: bool = False):
+    """
+    «Гипотезы и самопроверка» без дообучения. Модель пишет несколько вариантов ответа (жадный + n − 1
+    случайных), а потом сама проверяет каждый вариант двумя вопросами:
+      • насколько ответ вероятен после ЭТОГО вопроса (средний log p на токен — без выгоды коротким ответам);
+      • насколько он вероятнее после этого вопроса, чем после нейтральных («Привет!», ...): отвечает ли он
+        именно на этот вопрос, а не «вообще» (PMI). Узнавать свой вопрос по ответу модель умеет гораздо
+        лучше, чем сразу писать верный ответ (84–89% против 45%), и этот разрыв здесь и используется.
+    Итог = правдоподобие + alpha · PMI. Незаконченные реплики отбрасываются. Стоит ~n проходов генерации.
+    Проверено на итоговой модели: верный вариант среди 8 есть в 53% задач (жадный — 43%), но выбрать его
+    модель сама не может (+0.7 пункта при alpha 0.25, больший вес PMI вредит) — TRAINING_REASONING_RU.md, раздел 6.
+    """
+    ctx = prompt_ids(tok, turns)
+    cands = [generate_replies(model, tok, ctx, n=1, max_new_tokens=max_new, temperature=0,
+                              repetition_penalty=1.0)[0]]
+    if n > 1:
+        cands += generate_replies(model, tok, ctx, n=n - 1, max_new_tokens=max_new, temperature=temperature,
+                                  generator=generator)
+    uniq, seen = [], set()
+    for c in cands:
+        if c and c[-1] == tok.nl_id and tuple(c) not in seen:
+            seen.add(tuple(c))
+            uniq.append(c)
+    uniq = uniq or [cands[0]]
+    seqs = [(ctx + c, [0] * len(ctx) + [1] * len(c)) for c in uniq]
+    for q in NEUTRAL_QUESTIONS:
+        nctx = prompt_ids(tok, list(turns[:-1]) + [("user", q)])
+        seqs += [(nctx + c, [0] * len(nctx) + [1] * len(c)) for c in uniq]
+    sc = score_sequences(model, seqs, tok.nl_id, batch_size=64)
+    k = len(uniq)
+    mean_lp = sc[:, 0] / np.maximum(sc[:, 1], 1)
+    lp = mean_lp[:k]
+    neutral = mean_lp[k:].reshape(len(NEUTRAL_QUESTIONS), k).mean(axis=0)
+    score = lp + alpha * (lp - neutral)
+    best = int(np.argmax(score))
+    text = reply_text(tok, uniq[best])
+    if details:
+        return text, [(reply_text(tok, c), float(l), float(l - u), float(v))      # (ответ, log p, PMI, итог)
+                      for c, l, u, v in zip(uniq, lp, neutral, score)]
+    return text
 
 
 def choice_accuracy(model, tok, chat: bool, rows: List[dict]) -> Dict[str, float]:
@@ -1042,8 +1172,15 @@ def cmd_eval(args: argparse.Namespace) -> None:
         t0 = time.time()
         per_cat: Dict[str, List[int]] = {}
         probe_out = []
+        gen = torch.Generator().manual_seed(args.seed)
         for p in probes:
-            text = answer(model, tok, chat, p["turns"], guidance=args.guidance if chat else 0.0)
+            if chat and args.rerank > 1:
+                text = answer_rerank(model, tok, p["turns"], n=args.rerank, alpha=args.rerank_alpha,
+                                     max_new=args.max_new, generator=gen)
+            else:
+                text = answer(model, tok, chat, p["turns"], guidance=args.guidance if chat else 0.0,
+                              max_new=args.max_new, copy=args.copy if chat else 0.0,
+                              copy_start=args.copy_start if chat else 0.0)
             ok = bool(check_reply(text, p["check"]))
             per_cat.setdefault(p["cat"], []).append(int(ok))
             probe_out.append({"cat": p["cat"], "q": p["turns"][-1][1], "reply": text, "ok": ok})
@@ -1093,12 +1230,54 @@ def cmd_eval(args: argparse.Namespace) -> None:
 # 6) CHAT  7) EXPORT
 # =============================================================================
 
+def load_dictionary(path: str) -> Dict[str, Tuple[str, str]]:
+    """
+    Внешний словарь: строки «слово — определение» (или «слово | определение»), # — комментарий.
+    Модель не хранит словарь в весах: определение подкладывается в разговор, когда слово встречается
+    в вопросе, а модель обучена отвечать по такой справке (chat_corpus.py, шаблон «справка»).
+    """
+    out: Dict[str, Tuple[str, str]] = {}
+    with open(path, encoding="utf-8") as f:
+        for line in f:
+            line = line.strip()
+            if not line or line.startswith("#"):
+                continue
+            parts = re.split(r"\s+[—–-]\s+|\s*\|\s*", line, maxsplit=1)
+            if len(parts) != 2 or not parts[0] or not parts[1]:
+                continue
+            word, definition = parts[0].strip(), parts[1].strip()
+            if not definition.lower().startswith("это "):
+                definition = "это " + definition[:1].lower() + definition[1:]
+            if not definition.endswith((".", "!", "?")):
+                definition += "."
+            out[word.lower().replace("ё", "е")] = (word, definition)
+    return out
+
+
+def dictionary_hit(text: str, dictionary: Dict[str, Tuple[str, str]]) -> Optional[Tuple[str, str]]:
+    """Первое слово сообщения, которое есть в словаре (с грубым учётом падежей: «синхрофазотрона»)."""
+    for w in re.findall(r"[а-яёa-z-]+", text.lower().replace("ё", "е")):
+        if w in dictionary:
+            return dictionary[w]
+        for cut in (1, 2):                     # окончание: астролябию → астролябия, барометра → барометр
+            stem = w[:-cut] if len(w) - cut >= 4 else None
+            if not stem:
+                continue
+            for head in (stem, stem + "а", stem + "я", stem + "ь", stem + "й"):
+                if head in dictionary and len(head) >= 5:
+                    return dictionary[head]
+    return None
+
+
 def cmd_chat(args: argparse.Namespace) -> None:
     import torch
     torch.manual_seed(args.seed)
     model, tok, chat = load_chat_model(args.ckpt, torch.device("cpu"), allow_base=False)
     g = torch.Generator().manual_seed(args.seed)
     history: List[Tuple[str, str]] = []
+    dictionary = load_dictionary(args.dictionary) if args.dictionary else {}
+    if dictionary:
+        print(f"Словарь: {len(dictionary):,} слов из {args.dictionary}")
     print("Диалог с SLR-Net (пустая строка — выход, /новый — начать заново)")
     while True:
         try:
@@ -1110,6 +1289,11 @@ def cmd_chat(args: argparse.Namespace) -> None:
         if text == "/новый":
             history = []
             continue
+        hit = dictionary_hit(text, dictionary) if dictionary else None
+        if hit:
+            import chat_corpus as C
+            print(f"   (справка из словаря: {hit[0]} — {hit[1]})")
+            text = C.reference_turn(hit[0], hit[1], text)
         history.append(("user", text))
         ctx = prompt_ids(tok, history)
         while len(ctx) > args.context and len(history) > 1:      # длинная история: забываем начало
@@ -1120,7 +1304,7 @@ def cmd_chat(args: argparse.Namespace) -> None:
         ids = generate_replies(model, tok, ctx, n=1, max_new_tokens=args.max_new_tokens,
                                temperature=args.temperature, top_k=args.top_k, top_p=args.top_p,
                                repetition_penalty=args.repetition_penalty, guidance=args.guidance,
-                               uncond_ids=uncond, generator=g)[0]
+                               uncond_ids=uncond, generator=g, copy=args.copy, copy_start=args.copy_start)[0]
         reply = reply_text(tok, ids)
         history.append(("bot", reply))
         print(f"SLR-Net: {reply}   ({time.time() - t0:.2f} c)")
@@ -1229,6 +1413,14 @@ def main(argv: Optional[List[str]] = None) -> None:
     e.add_argument("--choice-items", type=int, default=600)
     e.add_argument("--open-items", type=int, default=200)
     e.add_argument("--guidance", type=float, default=0.0)
+    e.add_argument("--rerank", type=int, default=0,
+                   help="гипотезы и самопроверка: столько вариантов ответа, лучший — по самопроверке (0 — выкл)")
+    e.add_argument("--rerank-alpha", type=float, default=1.0, help="вес «отвечает ли именно на этот вопрос» (PMI)")
+    e.add_argument("--seed", type=int, default=0)
+    e.add_argument("--copy", type=float, default=0.0, help="механизм копирования слов из разговора (0 — выкл)")
+    e.add_argument("--copy-start", type=float, default=0.0, help="бонус началу редких слов из разговора")
+    e.add_argument("--max-new", type=int, default=64,
+                   help="предел длины ответа в токенах (64 — как в браузере; рассуждению нужно больше 40)")
     e.add_argument("--probes", type=int, default=0, help="сколько задач с проверкой (0 — все)")
     e.add_argument("--showcase", type=int, default=0, help="сколько примеров диалога (0 — все)")
     e.add_argument("--print-showcase", type=int, default=12)
@@ -1237,13 +1429,18 @@ def main(argv: Optional[List[str]] = None) -> None:
     c = sub.add_parser("chat", help="диалог в консоли")
     c.add_argument("--ckpt", default="slr_net_chat_ru_mini.npz")
     c.add_argument("--prompt", default=None, help="один вопрос без интерактивного режима")
-    c.add_argument("--max-new-tokens", type=int, default=48)
+    c.add_argument("--max-new-tokens", type=int, default=64)
     c.add_argument("--temperature", type=float, default=0.7)
     c.add_argument("--top-k", type=int, default=40)
     c.add_argument("--top-p", type=float, default=0.9)
     c.add_argument("--repetition-penalty", type=float, default=1.1)
     c.add_argument("--guidance", type=float, default=0.0, help="удержание темы (0 — выкл, 1–2 — сильнее)")
     c.add_argument("--context", type=int, default=240)
+    c.add_argument("--copy", type=float, default=3.0,
+                   help="механизм копирования слов из разговора (0 — выкл; 3 подобрано на проверке)")
+    c.add_argument("--copy-start", type=float, default=2.0, help="бонус началу редких слов из разговора")
+    c.add_argument("--dictionary", default=None,
+                   help="внешний словарь «слово — определение»: определение подкладывается в разговор")
     c.add_argument("--seed", type=int, default=0)
 
     x = sub.add_parser("export", help="упаковать веса чат-модели")
