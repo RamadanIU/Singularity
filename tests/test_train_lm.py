@@ -122,6 +122,35 @@ def test_init_drop_memory_and_compress_embedding_then_copytest(tmp_path, capsys)
     assert all(0.0 <= v["acc"] <= 1.0 for r in res["results"] for v in r["by_distance"].values())
 
 
+def test_singularity_options_train_with_fp_warmup_and_export(tmp_path, capsys):
+    """Части Singularity (Gated DeltaNet, глобальное внимание, затвор, ядро 2.0) включаются через --set, учатся
+    с разгоном без троичного квантования (--fp-warmup-steps) и упаковываются в файл, который снова читается."""
+    torch = pytest.importorskip("torch")
+    pytest.importorskip("sentencepiece")
+    corpus = tmp_path / "subs.txt"
+    lines = ["Привет! Как дела?", "Хорошо, спасибо.", "Куда ты идёшь?", "Домой, уже поздно.",
+             "Меня зовут Всеволод.", "Я живу в Костроме."]
+    corpus.write_text("\n".join(lines * 80), encoding="utf-8")
+    data, run = tmp_path / "data", tmp_path / "run"
+    train_lm.main(["prepare", "--input", str(corpus), "--out", str(data), "--vocab-size", "300"])
+    train_lm.main(["train", "--data", str(data), "--out", str(run), "--preset", "tiny", "--seq-len", "32",
+                   "--batch-size", "4", "--max-steps", "5", "--warmup", "1", "--eval-every", "2",
+                   "--eval-batches", "2", "--save-every", "100", "--log-every", "1", "--sample-prompt", "",
+                   "--fp-warmup-steps", "2", "--set", "memory_keys=0", "ssm_type=gdn", "gdn_head_dim=32",
+                   "attn_gate=true", "qk_norm=true", "global_attn_every=2", "core_inject=true",
+                   "core_min_steps=1", "core_infer_steps=4"])
+    out = capsys.readouterr().out
+    assert "первые 2 шагов без троичного квантования" in out
+    assert "шаг 2: включено троичное квантование" in out
+    packed = tmp_path / "s.npz"
+    train_lm.main(["export", "--ckpt", str(run / "best.pt"), "--out", str(packed)])
+    model, tok = train_lm.load_model(str(packed), torch.device("cpu"))
+    assert model.config.ssm_type == "gdn" and model.config.core_infer_steps == 4
+    assert isinstance(model.core.layers[0], train_lm.E.GatedDeltaNetBlock)
+    text = train_lm.sample_text(model, tok, "Привет!", 8, 0.8, 20, 0.95, 1.1, torch.device("cpu"))
+    assert isinstance(text, str)
+
+
 def test_tokenizer_proto_roundtrip(tmp_path):
     pytest.importorskip("sentencepiece")
     import sentencepiece as spm

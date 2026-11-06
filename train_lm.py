@@ -310,18 +310,31 @@ def cpu_has_amx_bf16() -> bool:
 
 def autocast_for(device, dtype: str):
     """
-    bf16 для матричных умножений: на видеокарте — если она умеет bf16; на процессоре — только по явному
-    --dtype bf16 (на Intel Xeon с AMX это в ~2.5 раза быстрее float32; на процессорах без AMX bf16 медленнее).
-    Мастер-веса, квантование, скан Mamba и ошибка остаются во float32.
+    Тип чисел для матричных умножений. Возвращает (название: "bf16" / "fp16" / "fp32", контекст autocast).
+    - bf16: на видеокарте — если она умеет его аппаратно (Ampere и новее: A100, L4, H100, RTX 30xx/40xx);
+      на процессоре — только по явному --dtype bf16 (на Intel Xeon с AMX это в ~2.5 раза быстрее float32).
+    - fp16: только по явному --dtype fp16 и только на видеокарте — для старых карт без bf16 (Tesla T4 в
+      бесплатном Colab: mini2 — 12.4 тыс. токенов/с против 8.5 тыс. во float32 и 6.7 тыс. в эмулируемом bf16).
+      С ним нужен GradScaler (масштабирование ошибки, чтобы маленькие градиенты не обнулились).
+    Мастер-веса, квантование, скан Mamba / Gated DeltaNet и ошибка остаются во float32.
     """
     import torch
     if device.type == "cuda":
-        use = torch.cuda.is_bf16_supported() and dtype in ("auto", "bf16")
-    else:
-        use = device.type == "cpu" and dtype == "bf16"
-        if use and not cpu_has_amx_bf16():
+        if dtype == "fp16":
+            return "fp16", torch.autocast("cuda", dtype=torch.float16)
+        native_bf16 = torch.cuda.get_device_capability(device)[0] >= 8
+        if dtype == "bf16" or (dtype == "auto" and native_bf16):
+            if not native_bf16:
+                print("ВНИМАНИЕ: эта видеокарта считает bf16 программно — fp16 или fp32 будут быстрее")
+            return "bf16", torch.autocast("cuda", dtype=torch.bfloat16)
+        return "fp32", nullcontext()
+    if dtype == "fp16":
+        raise ValueError("--dtype fp16 — только для видеокарты; на процессоре используйте bf16 или fp32")
+    if device.type == "cpu" and dtype == "bf16":
+        if not cpu_has_amx_bf16():
             print("ВНИМАНИЕ: у процессора нет AMX-BF16 — bf16 может оказаться медленнее float32")
-    return use, (torch.autocast(device.type, dtype=torch.bfloat16) if use else nullcontext())
+        return "bf16", torch.autocast(device.type, dtype=torch.bfloat16)
+    return "fp32", nullcontext()
 
 
 def lr_at(step: int, args: argparse.Namespace) -> float:
@@ -448,7 +461,15 @@ def cmd_train(args: argparse.Namespace) -> None:
     if ckpt is not None and "optimizer" in ckpt:
         optimizer.load_state_dict(ckpt["optimizer"])
 
-    use_bf16, autocast_ctx = autocast_for(device, args.dtype)
+    dtype_name, autocast_ctx = autocast_for(device, args.dtype)
+    scaler = torch.amp.GradScaler("cuda", enabled=(dtype_name == "fp16"))
+    if ckpt is not None and ckpt.get("scaler") and dtype_name == "fp16":
+        scaler.load_state_dict(ckpt["scaler"])
+    # Разгон без троичного квантования (Nielsen et al., 2025: 16 бит -> 1.58 бита лучше, чем 1.58 бита с нуля):
+    # первые --fp-warmup-steps шагов веса и активации не квантуются, потом квантование включается, а
+    # состояние оптимизатора сохраняется. В файл модель всё равно попадает троичной.
+    fp_warmup = args.fp_warmup_steps if cfg.ternary else 0
+    E.set_ternary_quantization(model, cfg.ternary and start_step >= fp_warmup)
     train_model = torch.compile(model) if args.compile else model
 
     val_start = int(meta["val_start"])
@@ -477,7 +498,8 @@ def cmd_train(args: argparse.Namespace) -> None:
           f"{f' ({cfg.embed_bits} бит, сжимается при обучении)' if cfg.embed_bits else ' (float16)'}, "
           f"память фактов {fp['packed_memory_mb']:.1f}, прочее {fp['packed_other_mb']:.1f}")
     print(f"Устройство {device} | "
-          f"{'bf16' if use_bf16 else 'fp32'} | LR {args.lr:g} | {tokens_per_step:,} токенов/шаг")
+          f"{dtype_name} | LR {args.lr:g} | {tokens_per_step:,} токенов/шаг"
+          + (f" | первые {fp_warmup} шагов без троичного квантования" if fp_warmup > start_step else ""))
     print(f"Данные: {val_start:,} обучающих токенов, {len(tokens) - val_start:,} валидационных; "
           f"{args.max_steps} шагов ≈ {args.max_steps * tokens_per_step / max(1, val_start):.1f} эпох")
     print("=" * 86)
@@ -491,6 +513,7 @@ def cmd_train(args: argparse.Namespace) -> None:
         # старый чекпоинт останется целым.
         tmp = path.with_name(path.name + ".tmp")
         torch.save({"model": model.state_dict(), "optimizer": optimizer.state_dict(),
+                    "scaler": scaler.state_dict() if scaler.is_enabled() else None,
                     "config": cfg.to_dict(), "step": step, "best_val": best_val,
                     "tokenizer": os.path.abspath(tok_path), "tokenizer_proto": tok_proto,
                     "bytes_per_token": meta["bytes_per_token"]},
@@ -524,6 +547,9 @@ def cmd_train(args: argparse.Namespace) -> None:
     t_start = time.time()
     tokens_seen = start_step * tokens_per_step
     for step in range(start_step, args.max_steps):
+        if fp_warmup and step == fp_warmup:
+            E.set_ternary_quantization(model, True)
+            print(f"шаг {step}: включено троичное квантование весов (разгон без него закончен)", flush=True)
         lr = lr_at(step, args)
         for g in optimizer.param_groups:
             g["lr"] = lr
@@ -532,9 +558,11 @@ def cmd_train(args: argparse.Namespace) -> None:
             x, y = train_sampler.get()
             with autocast_ctx:
                 _, loss, stats = train_model(x, y)
-            (loss / args.grad_accum).backward()
+            scaler.scale(loss / args.grad_accum).backward()
+        scaler.unscale_(optimizer)
         grad_norm = torch.nn.utils.clip_grad_norm_(model.parameters(), args.grad_clip)
-        optimizer.step()
+        scaler.step(optimizer)
+        scaler.update()
         optimizer.zero_grad(set_to_none=True)
         tokens_seen += tokens_per_step
 
@@ -555,8 +583,10 @@ def cmd_train(args: argparse.Namespace) -> None:
             # валидация всегда во float32: так её цифры сравнимы между запусками с bf16 и без
             ev = evaluate(model, val_sampler, args.eval_batches, nullcontext())
             bpb = ev["loss"] / math.log(2) / meta["bytes_per_token"]
-            improved = ev["loss"] < best_val
-            best_val = min(best_val, ev["loss"])
+            # во время разгона без квантования «лучшая» модель не выбирается: её ошибка не троичная
+            quantized = not fp_warmup or step >= fp_warmup
+            improved = quantized and ev["loss"] < best_val
+            best_val = min(best_val, ev["loss"]) if quantized else best_val
             print(f"  ВАЛИДАЦИЯ: loss {ev['loss']:.4f} | перплексия {math.exp(min(20, ev['loss'])):.1f} | "
                   f"{bpb:.3f} бит/байт | глубина мышления {ev['depth']:.2f}{' | новый лучший' if improved else ''}",
                   flush=True)
@@ -813,9 +843,12 @@ def main(argv: Optional[List[str]] = None) -> None:
     t.add_argument("--log-every", type=int, default=20)
     t.add_argument("--sample-prompt", default="Привет! Как дела?")
     t.add_argument("--device", default="auto")
-    t.add_argument("--dtype", default="auto", choices=["auto", "bf16", "fp32"],
-                   help="auto: bf16 на видеокарте; на CPU с AMX (Intel Xeon 4-го поколения и новее) "
-                        "--dtype bf16 ускоряет обучение в ~2.5 раза")
+    t.add_argument("--fp-warmup-steps", type=int, default=0,
+                   help="первые N шагов без троичного квантования (потом оно включается); 0 — с первого шага")
+    t.add_argument("--dtype", default="auto", choices=["auto", "bf16", "fp16", "fp32"],
+                   help="auto: bf16 на видеокарте, которая умеет его аппаратно (иначе fp32); на старой "
+                        "видеокарте вроде T4 из бесплатного Colab — --dtype fp16 (в ~1.5 раза быстрее fp32); "
+                        "на CPU с AMX (Intel Xeon 4-го поколения и новее) --dtype bf16 ускоряет обучение в ~2.5 раза")
     t.add_argument("--compile", action="store_true", help="torch.compile (быстрее и на GPU, и на CPU: ~1.7x)")
     t.add_argument("--resume", default=None, help="продолжить с чекпоинта")
     t.add_argument("--init", default=None,

@@ -104,6 +104,19 @@ class SLRNetConfig:
     # --- Эмбеддинг (он же выходной слой) ---
     embed_bits: int = 0               # 0 — float16 как раньше; 2..8 — сжатие во время обучения до стольких бит
     embed_group: int = 64             # Сколько чисел строки эмбеддинга делят один масштаб (float16)
+    # --- Singularity (старший брат, PLAN_SINGULARITY_300M_RU.md). Всё выключено по умолчанию:
+    #     старые модели (mini, mini2) считаются ровно так же, как раньше. ---
+    ssm_type: str = "mamba2"          # рекуррентные слои: "mamba2" или "gdn" (Gated DeltaNet, правило дельты)
+    gdn_head_dim: int = 0             # размер головы ключей Gated DeltaNet (0 — как ssm_headdim)
+    gdn_v_expand: int = 1             # во сколько раз голова значений шире головы ключей
+    attn_gate: bool = False           # сигмоидный затвор на выходе внимания (Qiu et al., 2025)
+    qk_norm: bool = False             # RMSNorm запросов и ключей в каждой голове
+    global_attn_every: int = 0        # каждое k-е внимание модели — глобальное (весь контекст, без RoPE)
+    global_kv_heads: int = 0          # ключевых голов у глобальных слоёв (0 — как n_kv_heads)
+    core_inject: bool = False         # ядро 2.0: на каждом круге подмешивать вход ядра (выход прелюдии)
+    core_min_steps: int = 0           # > 0: при обучении число кругов случайно от core_min_steps до max_latent_steps
+    core_bptt: int = 0                # > 0: градиент только через последние core_bptt кругов
+    core_infer_steps: int = 0         # кругов ядра при ответе (0 — как max_latent_steps); можно больше
     # --- Прочее ---
     ternary: bool = True              # False — обычные FP-веса (полезно для сравнения качества)
     rms_norm_eps: float = 1e-6
@@ -133,6 +146,27 @@ class SLRNetConfig:
     def mlp_hidden(self) -> int:
         return int(self.mlp_ratio * self.d_model)
 
+    @property
+    def gdn_dk(self) -> int:
+        return self.gdn_head_dim or self.ssm_headdim
+
+    @property
+    def gdn_nheads(self) -> int:
+        return self.d_model // self.gdn_dk
+
+    @property
+    def gdn_dv(self) -> int:
+        return self.gdn_dk * self.gdn_v_expand
+
+    @property
+    def global_kv(self) -> int:
+        return self.global_kv_heads or self.n_kv_heads
+
+    @property
+    def infer_steps(self) -> int:
+        """Сколько кругов ядра мышления делать при ответе (и в пошаговой генерации)."""
+        return self.core_infer_steps or self.max_latent_steps
+
     def validate(self) -> None:
         assert self.d_inner % self.ssm_headdim == 0, "d_inner должно делиться на ssm_headdim"
         assert self.d_model % self.n_heads == 0, "d_model должно делиться на n_heads"
@@ -147,6 +181,14 @@ class SLRNetConfig:
             assert 2 <= self.embed_bits <= 8, "embed_bits: 0 (float16) или от 2 до 8"
             assert self.embed_group > 0 and self.d_model % self.embed_group == 0, \
                 "d_model должно делиться на embed_group"
+        assert self.ssm_type in ("mamba2", "gdn"), "ssm_type: 'mamba2' или 'gdn'"
+        if self.ssm_type == "gdn":
+            assert self.d_model % self.gdn_dk == 0, "d_model должно делиться на gdn_head_dim"
+            assert self.gdn_v_expand >= 1
+        assert self.global_attn_every >= 0 and self.global_kv_heads >= 0
+        assert self.n_heads % self.global_kv == 0, "n_heads должно делиться на global_kv_heads"
+        assert 0 <= self.core_min_steps <= self.max_latent_steps, "core_min_steps <= max_latent_steps"
+        assert self.core_bptt >= 0 and self.core_infer_steps >= 0
 
     def to_dict(self) -> Dict[str, object]:
         return asdict(self)
@@ -180,6 +222,31 @@ PRESETS: Dict[str, Dict[str, object]] = {
         n_decoder_layers=4, decoder_attn_every=2, n_heads=8, n_kv_heads=8,
         window_size=256, max_latent_steps=3, memory_keys=0, embed_bits=4, embed_group=64,
     ),
+    # «s300» — Singularity, старший брат mini2 (PLAN_SINGULARITY_300M_RU.md): mini2, увеличенная с сохранением
+    # пропорций (ширина ×2, глубина ×2, словарь ×4, внимание через слой), плюс улучшения: рекуррентные слои
+    # Gated DeltaNet вместо Mamba-2, каждое 4-е внимание глобальное (весь разговор, без RoPE, 4 общих ключа),
+    # затвор на выходе внимания и QK-norm, ядро мышления 2.0 (подмешивание входа, случайно 1–4 круга при
+    # обучении, до 8 при ответе). Каждое улучшение ещё нужно проверить против контроля (фаза 1 плана).
+    "s300": dict(
+        vocab_size=32768, d_model=1024, d_state=64, ssm_headdim=64, ssm_chunk=64,
+        n_encoder_layers=16, encoder_attn_every=2, n_reasoning_layers=4,
+        n_decoder_layers=8, decoder_attn_every=2, n_heads=16, n_kv_heads=16,
+        window_size=1024, max_latent_steps=4, memory_keys=0, embed_bits=4, embed_group=64,
+        ssm_type="gdn", gdn_head_dim=128, attn_gate=True, qk_norm=True,
+        global_attn_every=4, global_kv_heads=4,
+        core_inject=True, core_min_steps=1, core_infer_steps=8,
+    ),
+    # «s300proxy» — пробная модель для фазы 1: та же глубина и устройство, что у s300, но вдвое уже.
+    # На ней каждое улучшение сравнивается с контролем (то же, но с выключенным улучшением).
+    "s300proxy": dict(
+        vocab_size=32768, d_model=512, d_state=64, ssm_headdim=64, ssm_chunk=64,
+        n_encoder_layers=16, encoder_attn_every=2, n_reasoning_layers=4,
+        n_decoder_layers=8, decoder_attn_every=2, n_heads=8, n_kv_heads=8,
+        window_size=512, max_latent_steps=4, memory_keys=0, embed_bits=4, embed_group=64,
+        ssm_type="gdn", gdn_head_dim=128, attn_gate=True, qk_norm=True,
+        global_attn_every=4, global_kv_heads=2,
+        core_inject=True, core_min_steps=1, core_infer_steps=8,
+    ),
     "small": dict(
         vocab_size=16384, d_model=384, d_state=64, ssm_headdim=64,
         n_encoder_layers=6, encoder_attn_every=3, n_reasoning_layers=2,
@@ -209,6 +276,25 @@ def make_config(preset: str = "small", **overrides) -> SLRNetConfig:
 def layer_kinds(n_layers: int, attn_every: int) -> List[str]:
     """Схема слоёв: 'attn' на каждом attn_every-м месте, остальные — 'ssm'."""
     return ["attn" if attn_every > 0 and (i + 1) % attn_every == 0 else "ssm" for i in range(n_layers)]
+
+
+def model_layer_kinds(config: "SLRNetConfig") -> Tuple[List[str], List[str]]:
+    """
+    Схема прелюдии и коды с учётом глобального внимания: 'ssm' (рекуррентный слой), 'attn' (локальное
+    внимание) или 'gattn' (глобальное). Глобальным становится каждое global_attn_every-е внимание модели,
+    считая подряд по прелюдии и коде (у s300: 12 слоёв внимания -> 3 глобальных, 2 в прелюдии и 1 в коде).
+    """
+    enc = layer_kinds(config.n_encoder_layers, config.encoder_attn_every)
+    dec = layer_kinds(config.n_decoder_layers, config.decoder_attn_every)
+    if config.global_attn_every > 0:
+        j = 0
+        for kinds in (enc, dec):
+            for i, kind in enumerate(kinds):
+                if kind == "attn":
+                    j += 1
+                    if j % config.global_attn_every == 0:
+                        kinds[i] = "gattn"
+    return enc, dec
 
 
 # =============================================================================
@@ -476,6 +562,193 @@ if TORCH_AVAILABLE:
                 cache["ssm"] = torch.where(active[:, None, None, None], state, cache["ssm"])
             return out
 
+    # ---------------------------------------------------------------- Gated DeltaNet
+
+    def l2norm(x: torch.Tensor, eps: float = 1e-6) -> torch.Tensor:
+        return x * torch.rsqrt(x.pow(2).sum(-1, keepdim=True) + eps)
+
+    def gated_delta_step(S: torch.Tensor, q: torch.Tensor, k: torch.Tensor, v: torch.Tensor,
+                         g: torch.Tensor, beta: torch.Tensor) -> Tuple[torch.Tensor, torch.Tensor]:
+        """
+        Один шаг правила дельты с затуханием (Gated DeltaNet, Yang et al., ICLR 2025):
+            S_t = exp(g_t) * (I - beta_t k_t k_t^T) S_{t-1} + beta_t k_t v_t^T,   o_t = S_t^T q_t
+        Память S не только «добавляет» новое (как Mamba-2), но и ПЕРЕПИСЫВАЕТ то, что лежало под тем же
+        ключом: сначала читает старое значение k^T S, затем записывает поправку (v - старое).
+          S: (b, h, dk, dv); q, k: (b, h, dk); v: (b, h, dv); g, beta: (b, h).
+        """
+        S = S * g.exp()[..., None, None]
+        old = (S * k[..., None]).sum(-2)                                   # k^T S: что помнили под этим ключом
+        delta = (v - old) * beta[..., None]
+        S = S + k[..., None] * delta[..., None, :]
+        return (S * q[..., None]).sum(-2), S
+
+    def gated_delta_rule_chunked(q: torch.Tensor, k: torch.Tensor, v: torch.Tensor, g: torch.Tensor,
+                                 beta: torch.Tensor, chunk: int,
+                                 initial_state: Optional[torch.Tensor] = None
+                                 ) -> Tuple[torch.Tensor, torch.Tensor]:
+        """
+        Параллельный блочный проход Gated DeltaNet (то же, что цикл gated_delta_step по времени, но
+        матричными умножениями). Внутри блока из C токенов поправки к памяти зависят друг от друга
+        треугольно — это решается одной треугольной системой (I + A) T = I (представление WY / UT).
+          q, k: (b, h, l, dk) — уже нормированы (q ещё и умножен на dk^-0.5); v: (b, h, l, dv);
+          g: (b, h, l) — логарифм затухания (<= 0); beta: (b, h, l) в (0, 1).
+        Возвращает o: (b, h, l, dv) и итоговую память (b, h, dk, dv).
+        """
+        b, h, l, dk = k.shape
+        dv = v.shape[-1]
+        C = max(1, min(chunk, l))
+        pad = (C - l % C) % C
+        q, k, v, g, beta = (t.float() for t in (q, k, v, g, beta))
+        if pad:   # хвост: k = v = 0, beta = 0, g = 0 — память не меняется
+            q, k, v = (F.pad(t, (0, 0, 0, pad)) for t in (q, k, v))
+            g, beta = F.pad(g, (0, pad)), F.pad(beta, (0, pad))
+        n = q.shape[2] // C
+        q, k, v = (t.reshape(b, h, n, C, -1) for t in (q, k, v))
+        g = g.reshape(b, h, n, C).cumsum(-1)                                # G_i внутри блока
+        beta = beta.reshape(b, h, n, C)
+        k_beta, v_beta = k * beta[..., None], v * beta[..., None]
+        lower = torch.tril(torch.ones(C, C, dtype=torch.bool, device=q.device))
+        diff = g[..., :, None] - g[..., None, :]                            # G_i - G_j
+        decay = torch.where(lower, diff, torch.full_like(diff, float("-inf"))).exp()   # 0 выше диагонали
+        strict = torch.tril(torch.ones(C, C, dtype=torch.bool, device=q.device), diagonal=-1)
+        A = ((k_beta @ k.transpose(-1, -2)) * decay).masked_fill(~strict, 0.0)
+        eye = torch.eye(C, device=q.device, dtype=q.dtype)
+        T = torch.linalg.solve_triangular(eye + A, eye.expand_as(A).contiguous(), upper=False,
+                                          unitriangular=True)
+        U = T @ v_beta                                                      # поправки без учёта прошлой памяти
+        W = T @ (k_beta * g.exp()[..., None])                               # как поправки зависят от прошлой памяти
+        S = torch.zeros(b, h, dk, dv, device=q.device, dtype=torch.float32) if initial_state is None \
+            else initial_state.float()
+        outs = []
+        for i in range(n):
+            qi, ki, gi = q[:, :, i], k[:, :, i], g[:, :, i]
+            v_new = U[:, :, i] - W[:, :, i] @ S
+            attn = (qi @ ki.transpose(-1, -2)) * decay[:, :, i]             # внутри блока (с диагональю)
+            outs.append((qi * gi.exp()[..., None]) @ S + attn @ v_new)
+            S = S * gi[..., -1, None, None].exp() + \
+                (ki * (gi[..., -1:] - gi).exp()[..., None]).transpose(-1, -2) @ v_new
+        out = torch.stack(outs, dim=2).reshape(b, h, n * C, dv)[:, :, :l]
+        return out, S
+
+    # Быстрое GPU-ядро из flash-linear-attention (pip install flash-linear-attention), если оно есть.
+    # Перед первым использованием сверяется с эталоном выше; при расхождении — тихо не используется.
+    _FLA_STATE: Dict[str, object] = {"checked": False, "fn": None}
+
+    def _fla_gated_delta(q, k, v, g, beta):
+        if not _FLA_STATE["checked"]:
+            _FLA_STATE["checked"] = True
+            import os
+            if os.environ.get("SLR_FLA", "1") != "0":
+                try:
+                    from fla.ops.gated_delta_rule import chunk_gated_delta_rule as fn
+                    gen = torch.Generator(device=q.device).manual_seed(0)
+                    tq, tk = (l2norm(torch.randn(1, 2, 70, q.shape[-1], device=q.device, generator=gen))
+                              for _ in range(2))
+                    tv = torch.randn(1, 2, 70, v.shape[-1], device=q.device, generator=gen)
+                    tg = -torch.rand(1, 2, 70, device=q.device, generator=gen)
+                    tb = torch.rand(1, 2, 70, device=q.device, generator=gen)
+                    ref, _ = gated_delta_rule_chunked(tq * q.shape[-1] ** -0.5, tk, tv, tg, tb, 64)
+                    got = fn(*(t.transpose(1, 2).contiguous() for t in (tq, tk, tv, tg, tb)),
+                             scale=q.shape[-1] ** -0.5)[0].transpose(1, 2).float()
+                    if torch.allclose(got, ref, atol=2e-2, rtol=2e-2):
+                        _FLA_STATE["fn"] = fn
+                except Exception:   # нет пакета, другая версия API, старая видеокарта
+                    _FLA_STATE["fn"] = None
+        fn = _FLA_STATE["fn"]
+        if fn is None:
+            return None
+        o = fn(*(t.transpose(1, 2).contiguous() for t in (q, k, v, g, beta)), scale=1.0)[0]
+        return o.transpose(1, 2).float()
+
+    class GatedDeltaNetBlock(nn.Module):
+        """
+        Рекуррентный слой Gated DeltaNet с троичными проекциями — замена Mamba-2 (ssm_type="gdn").
+        Память фиксированного размера (h голов по dk x dv), как у Mamba-2, но с правилом дельты:
+        старое значение под тем же ключом переписывается, а не смазывается. Это точнее для дословного
+        вспоминания слов из разговора — главной слабости mini2 («Всеволод» -> «Ярос»).
+        Устройство как в Qwen3-Next / flash-linear-attention: короткая свёртка + SiLU на q, k, v;
+        L2-нормировка q и k; затухание g = -exp(A_log) * softplus(a); beta = sigmoid(b);
+        выход: RMSNorm по голове * SiLU(z) -> out_proj.
+        """
+
+        def __init__(self, cfg: SLRNetConfig):
+            super().__init__()
+            self.nheads, self.dk, self.dv = cfg.gdn_nheads, cfg.gdn_dk, cfg.gdn_dv
+            self.key_dim, self.value_dim = self.nheads * self.dk, self.nheads * self.dv
+            self.conv_dim = 2 * self.key_dim + self.value_dim
+            self.chunk, self.d_conv = cfg.ssm_chunk, cfg.d_conv
+            self.norm = RMSNorm(cfg.d_model, eps=cfg.rms_norm_eps)
+            self.in_proj = BitLinear158(cfg.d_model, self.conv_dim + self.value_dim,
+                                        ternary=cfg.ternary, use_norm=False)
+            # a (затухание) и b (сила записи beta) — маленькая чувствительная проекция, полная точность
+            self.ab_proj = nn.Linear(cfg.d_model, 2 * self.nheads, bias=True)
+            self.conv1d = nn.Conv1d(self.conv_dim, self.conv_dim, kernel_size=cfg.d_conv,
+                                    groups=self.conv_dim, padding=cfg.d_conv - 1, bias=True)
+            self.A_log = nn.Parameter(torch.log(torch.empty(self.nheads).uniform_(1.0, 16.0)))
+            self.out_norm = RMSNorm(self.dv, eps=cfg.rms_norm_eps)
+            self.out_proj = BitLinear158(self.value_dim, cfg.d_model, ternary=cfg.ternary, use_norm=False)
+            dt = torch.exp(torch.empty(self.nheads).uniform_(math.log(1e-3), math.log(1e-1)))
+            with torch.no_grad():
+                nn.init.normal_(self.ab_proj.weight, std=0.02)
+                self.ab_proj.bias[: self.nheads].copy_(dt + torch.log(-torch.expm1(-dt)))
+                self.ab_proj.bias[self.nheads:].zero_()
+
+        def _project(self, x: torch.Tensor):
+            h = self.norm(x)
+            qkv, z = self.in_proj(h).split([self.conv_dim, self.value_dim], dim=-1)
+            a, b = self.ab_proj(h).float().chunk(2, dim=-1)
+            g = -torch.exp(self.A_log.float()) * F.softplus(a)            # логарифм затухания, <= 0
+            return qkv, z, g, torch.sigmoid(b)
+
+        def _heads(self, qkv: torch.Tensor):
+            q, k, v = qkv.split([self.key_dim, self.key_dim, self.value_dim], dim=-1)
+            lead = q.shape[:-1]
+            q = l2norm(q.reshape(*lead, self.nheads, self.dk).float()) * self.dk ** -0.5
+            k = l2norm(k.reshape(*lead, self.nheads, self.dk).float())
+            return q, k, v.reshape(*lead, self.nheads, self.dv).float()
+
+        def _out(self, o: torch.Tensor, z: torch.Tensor, x: torch.Tensor) -> torch.Tensor:
+            z = z.reshape(*z.shape[:-1], self.nheads, self.dv)
+            o = self.out_norm(o.to(x.dtype)) * F.silu(z)
+            return x + self.out_proj(o.reshape(*o.shape[:-2], self.value_dim))
+
+        def forward(self, x: torch.Tensor) -> torch.Tensor:
+            l = x.shape[1]
+            qkv, z, g, beta = self._project(x)
+            qkv = F.silu(self.conv1d(qkv.transpose(1, 2))[..., :l].transpose(1, 2))
+            q, k, v = (t.transpose(1, 2) for t in self._heads(qkv))           # (b, h, l, d)
+            g, beta = g.transpose(1, 2), beta.transpose(1, 2)
+            o = _fla_gated_delta(q, k, v, g, beta) if q.is_cuda else None
+            if o is None:
+                o, _ = gated_delta_rule_chunked(q, k, v, g, beta, self.chunk)
+            return self._out(o.transpose(1, 2), z, x)
+
+        def init_cache(self, batch: int, device, dtype) -> Dict[str, torch.Tensor]:
+            return {
+                "conv": torch.zeros(batch, self.conv_dim, self.d_conv - 1, device=device, dtype=dtype),
+                "ssm": torch.zeros(batch, self.nheads, self.dk, self.dv, device=device, dtype=torch.float32),
+            }
+
+        def step(self, x: torch.Tensor, cache: Dict[str, torch.Tensor],
+                 active: Optional[torch.Tensor] = None) -> torch.Tensor:
+            """Один токен: x (b, d_model). active (b,) — для каких строк обновлять память."""
+            qkv, z, g, beta = self._project(x)
+            window = torch.cat([cache["conv"], qkv.unsqueeze(-1)], dim=-1)
+            qkv = F.silu((window * self.conv1d.weight[:, 0, :]).sum(-1) + self.conv1d.bias)
+            q, k, v = self._heads(qkv)
+            o, state = gated_delta_step(cache["ssm"], q, k, v, g, beta)
+            out = self._out(o, z, x)
+            new_conv = window[..., 1:]
+            if active is None:
+                cache["conv"], cache["ssm"] = new_conv, state
+            else:
+                cache["conv"] = torch.where(active[:, None, None], new_conv, cache["conv"])
+                cache["ssm"] = torch.where(active[:, None, None, None], state, cache["ssm"])
+            return out
+
+    def recurrent_block(cfg: SLRNetConfig) -> nn.Module:
+        return GatedDeltaNetBlock(cfg) if cfg.ssm_type == "gdn" else Mamba2Block(cfg)
+
     # ---------------------------------------------------------------- Внимание + MLP
 
     class ReluSqMLP(nn.Module):
@@ -495,29 +768,53 @@ if TORCH_AVAILABLE:
         Каузальное внимание в скользящем окне W (+ RoPE, GQA) и MLP.
         Считается блоками: каждый блок из W запросов смотрит на 2W ключей (свой и предыдущий блок),
         поэтому память и время O(L * W), а не O(L^2), как было с полной матрицей L x L.
+
+        is_global=True — глобальное внимание (слои 'gattn' у Singularity): весь контекст без окна, без
+        позиционного кодирования (NoPE: порядок и «недавность» дают соседние слои, как в Kimi Linear и
+        Llama 4), global_kv_heads общих ключей, чтобы кэш на длинном разговоре был меньше.
+        attn_gate — сигмоидный затвор на выходе внимания по каждому числу каждой головы (Qiu et al., 2025);
+        qk_norm — RMSNorm запросов и ключей в каждой голове (устойчивость обучения).
         """
 
-        def __init__(self, cfg: SLRNetConfig):
+        def __init__(self, cfg: SLRNetConfig, is_global: bool = False):
             super().__init__()
-            self.n_heads, self.n_kv_heads, self.head_dim = cfg.n_heads, cfg.n_kv_heads, cfg.head_dim
+            self.is_global = is_global
+            self.n_heads, self.head_dim = cfg.n_heads, cfg.head_dim
+            self.n_kv_heads = cfg.global_kv if is_global else cfg.n_kv_heads
             self.window, self.rope_theta = cfg.window_size, cfg.rope_theta
             self.norm = RMSNorm(cfg.d_model, eps=cfg.rms_norm_eps)
             qkv_out = (self.n_heads + 2 * self.n_kv_heads) * self.head_dim
             self.qkv = BitLinear158(cfg.d_model, qkv_out, ternary=cfg.ternary, use_norm=False)
+            self.gate_proj = BitLinear158(cfg.d_model, self.n_heads * self.head_dim, ternary=cfg.ternary,
+                                          use_norm=False) if cfg.attn_gate else None
+            if cfg.qk_norm:
+                self.q_norm = RMSNorm(self.head_dim, eps=cfg.rms_norm_eps)
+                self.k_norm = RMSNorm(self.head_dim, eps=cfg.rms_norm_eps)
+            else:
+                self.q_norm = self.k_norm = None
             self.o_proj = BitLinear158(self.n_heads * self.head_dim, cfg.d_model,
                                        ternary=cfg.ternary, use_norm=True)
             self.mlp = ReluSqMLP(cfg) if cfg.mlp_ratio > 0 else None
 
-        def _qkv(self, x: torch.Tensor, positions: torch.Tensor):
-            b, l, _ = x.shape
-            q, k, v = self.qkv(self.norm(x)).split(
+        def _qkv(self, h: torch.Tensor, positions: torch.Tensor):
+            """h — уже нормированный вход (self.norm(x))."""
+            b, l, _ = h.shape
+            q, k, v = self.qkv(h).split(
                 [self.n_heads * self.head_dim, self.n_kv_heads * self.head_dim,
                  self.n_kv_heads * self.head_dim], dim=-1)
             q = q.view(b, l, self.n_heads, self.head_dim).transpose(1, 2)
             k = k.view(b, l, self.n_kv_heads, self.head_dim).transpose(1, 2)
             v = v.view(b, l, self.n_kv_heads, self.head_dim).transpose(1, 2)
+            if self.q_norm is not None:
+                q, k = self.q_norm(q), self.k_norm(k)
+            if self.is_global:
+                return q, k, v
             cos, sin = rope_cos_sin(positions, self.head_dim, self.rope_theta, q.dtype)
             return apply_rope(q, cos, sin), apply_rope(k, cos, sin), v
+
+        def _gate(self, out: torch.Tensor, h: torch.Tensor) -> torch.Tensor:
+            """out: (..., n_heads * head_dim) — выход внимания до o_proj; h — нормированный вход слоя."""
+            return out if self.gate_proj is None else out * torch.sigmoid(self.gate_proj(h)).to(out.dtype)
 
         def _expand_kv(self, t: torch.Tensor) -> torch.Tensor:
             rep = self.n_heads // self.n_kv_heads
@@ -552,24 +849,35 @@ if TORCH_AVAILABLE:
 
         def forward(self, x: torch.Tensor) -> torch.Tensor:
             b, l, _ = x.shape
-            q, k, v = self._qkv(x, torch.arange(l, device=x.device))
-            out = self._local_attention(q, self._expand_kv(k), self._expand_kv(v))
-            x = x + self.o_proj(out.transpose(1, 2).reshape(b, l, -1))
+            h = self.norm(x)
+            q, k, v = self._qkv(h, torch.arange(l, device=x.device))
+            k, v = self._expand_kv(k), self._expand_kv(v)
+            if self.is_global:
+                out = F.scaled_dot_product_attention(q, k, v, is_causal=True)
+            else:
+                out = self._local_attention(q, k, v)
+            out = self._gate(out.transpose(1, 2).reshape(b, l, -1), h)
+            x = x + self.o_proj(out)
             return self.mlp(x) if self.mlp is not None else x
 
         def init_cache(self, batch: int, device, dtype) -> Dict[str, object]:
             return {"k": None, "v": None, "pos": 0}
 
         def step(self, x: torch.Tensor, cache: Dict[str, object]) -> torch.Tensor:
+            """Один токен. Локальный слой хранит последние W ключей; глобальный — весь разговор."""
             b = x.shape[0]
             pos = torch.tensor([cache["pos"]], device=x.device)
-            q, k, v = self._qkv(x.unsqueeze(1), pos)
+            h = self.norm(x.unsqueeze(1))
+            q, k, v = self._qkv(h, pos)
             if cache["k"] is not None:
-                k = torch.cat([cache["k"], k], dim=2)[:, :, -self.window:]
-                v = torch.cat([cache["v"], v], dim=2)[:, :, -self.window:]
+                k = torch.cat([cache["k"], k], dim=2)
+                v = torch.cat([cache["v"], v], dim=2)
+                if not self.is_global:
+                    k, v = k[:, :, -self.window:], v[:, :, -self.window:]
             cache["k"], cache["v"], cache["pos"] = k, v, cache["pos"] + 1
             out = F.scaled_dot_product_attention(q, self._expand_kv(k), self._expand_kv(v))
-            x = x + self.o_proj(out.transpose(1, 2).reshape(b, -1))
+            out = self._gate(out.transpose(1, 2).reshape(b, -1), h[:, 0])
+            x = x + self.o_proj(out)
             return self.mlp(x) if self.mlp is not None else x
 
     # ---------------------------------------------------------------- Память фактов
@@ -615,8 +923,8 @@ if TORCH_AVAILABLE:
 
     class RecurrentDepthCore(nn.Module):
         """
-        Ядро «скрытого мышления»: стек Mamba-2 слоёв с общими весами, который крутится до K раз.
-        На каждом шаге k роутер решает, какие токены думают дальше:
+        Ядро «скрытого мышления»: стек рекуррентных слоёв (Mamba-2 или Gated DeltaNet) с общими весами,
+        который крутится до K раз. На каждом шаге k роутер решает, какие токены думают дальше:
           • обучение ("topk"): ровно ceil(L * capacity^(k+1)) лучших токенов среди прошедших шаг k-1
             (фиксированный бюджет вычислений; общий бюджет K шагов <= одного полного прохода при capacity=0.5)
             + BCE-лосс, обучающий роутер предсказывать этот выбор каузально;
@@ -624,15 +932,30 @@ if TORCH_AVAILABLE:
             поэтому работает и в пошаговой генерации.
         Выбранные токены собираются (gather) в подпоследовательность, обрабатываются и
         возвращаются на место (scatter) — невыбранные токены не стоят ни одной операции.
+
+        Ядро 2.0 (всё выключено по умолчанию, см. PLAN_SINGULARITY_300M_RU.md, раздел 4.1):
+          • core_inject — на каждом круге к состоянию подмешивается вход ядра e (выход прелюдии) с
+            обучаемой силой tanh(gamma_k), gamma_k = 0 в начале: мысль не уходит от вопроса (Huginn, TRM);
+          • core_min_steps — при обучении число кругов случайно от core_min_steps до max_latent_steps:
+            модель учится давать годный результат при любой глубине;
+          • core_bptt — градиент только через последние круги (ранние считаются без графа; путь от входа
+            ядра к выходу остаётся прямым, поэтому прелюдия учится и от «невыбранных» токенов);
+          • core_infer_steps — при ответе можно крутить ядро больше кругов, чем при обучении
+            (метка круга и сила подмешивания для лишних кругов — как у последнего обученного).
         """
 
         def __init__(self, cfg: SLRNetConfig):
             super().__init__()
             self.cfg = cfg
-            self.layers = nn.ModuleList([Mamba2Block(cfg) for _ in range(cfg.n_reasoning_layers)])
+            self.layers = nn.ModuleList([recurrent_block(cfg) for _ in range(cfg.n_reasoning_layers)])
             self.memory = ProductKeyMemory(cfg) if cfg.use_memory else None
             self.router = nn.Linear(cfg.d_model, 1)
             self.step_emb = nn.Parameter(torch.randn(cfg.max_latent_steps, cfg.d_model) * cfg.init_std)
+            if cfg.core_inject:
+                self.inject_norm = RMSNorm(cfg.d_model, eps=cfg.rms_norm_eps)
+                self.inject_gate = nn.Parameter(torch.zeros(cfg.max_latent_steps))
+            else:
+                self.inject_norm = self.inject_gate = None
             nn.init.normal_(self.router.weight, std=cfg.init_std)
             nn.init.zeros_(self.router.bias)
 
@@ -642,51 +965,74 @@ if TORCH_AVAILABLE:
                 h = layer(h)
             return h
 
+        def _num_steps(self, routing: str) -> int:
+            cfg = self.cfg
+            if routing == "topk":
+                if self.training and cfg.core_min_steps > 0:
+                    return int(torch.randint(cfg.core_min_steps, cfg.max_latent_steps + 1, (1,)).item())
+                return cfg.max_latent_steps
+            return cfg.infer_steps
+
+        def _round_input(self, z: torch.Tensor, e_norm: Optional[torch.Tensor], k: int) -> torch.Tensor:
+            j = min(k, self.cfg.max_latent_steps - 1)
+            z_in = z + self.step_emb[j].to(z.dtype)
+            if e_norm is not None:
+                z_in = z_in + torch.tanh(self.inject_gate[j]).to(z.dtype) * e_norm
+            return z_in
+
         def forward(self, h: torch.Tensor, routing: str = "topk"):
             b, l, d = h.shape
             z = h
+            e_norm = self.inject_norm(h) if self.inject_norm is not None else None
             cand = torch.ones(b, l, dtype=torch.bool, device=h.device)
             aux = torch.zeros((), device=h.device)
             depth = torch.zeros(b, l, device=h.device)
-            for k in range(self.cfg.max_latent_steps):
-                z_in = z + self.step_emb[k].to(z.dtype)
-                logit = self.router(z_in).squeeze(-1).float()                   # (b, l)
-                if routing == "topk":
-                    cap = min(l, max(1, math.ceil(l * self.cfg.router_capacity ** (k + 1))))
-                    top = logit.masked_fill(~cand, float("-inf")).topk(cap, dim=1).indices
-                    sel = torch.zeros_like(cand).scatter_(1, top, True) & cand
-                    aux = aux + F.binary_cross_entropy_with_logits(logit[cand], sel[cand].float())
-                elif routing == "threshold":
-                    sel = cand & (logit > 0)
-                elif routing == "all":
-                    sel = cand
-                else:
-                    raise ValueError(f"Неизвестный режим маршрутизации: {routing}")
-                if not bool(sel.any()):
-                    break
-                counts = sel.sum(dim=1)
-                lmax = int(counts.max())
-                order = torch.argsort((~sel).to(torch.int8), dim=1, stable=True)[:, :lmax]
-                valid = torch.arange(lmax, device=h.device)[None, :] < counts[:, None]
-                gidx = order.unsqueeze(-1).expand(-1, -1, d)
-                gate = torch.sigmoid(logit).gather(1, order) * valid
-                out = self._think(torch.gather(z_in, 1, gidx))
-                delta = (out - torch.gather(z, 1, gidx)) * gate.unsqueeze(-1)
-                z = z.scatter_add(1, gidx, delta.to(z.dtype))
-                depth = depth + sel.float()
-                cand = sel
+            n_steps = self._num_steps(routing)
+            grad_on = torch.is_grad_enabled()
+            first_grad = max(0, n_steps - self.cfg.core_bptt) if (grad_on and self.cfg.core_bptt > 0) else 0
+            for k in range(n_steps):
+                if grad_on and 0 < first_grad == k:
+                    z = h + (z - h).detach()            # ранние круги — без графа, прямой путь от h — с ним
+                with torch.set_grad_enabled(grad_on and k >= first_grad):
+                    z_in = self._round_input(z, e_norm, k)
+                    logit = self.router(z_in).squeeze(-1).float()               # (b, l)
+                    if routing == "topk":
+                        cap = min(l, max(1, math.ceil(l * self.cfg.router_capacity ** (k + 1))))
+                        top = logit.masked_fill(~cand, float("-inf")).topk(cap, dim=1).indices
+                        sel = torch.zeros_like(cand).scatter_(1, top, True) & cand
+                        aux = aux + F.binary_cross_entropy_with_logits(logit[cand], sel[cand].float())
+                    elif routing == "threshold":
+                        sel = cand & (logit > 0)
+                    elif routing == "all":
+                        sel = cand
+                    else:
+                        raise ValueError(f"Неизвестный режим маршрутизации: {routing}")
+                    if not bool(sel.any()):
+                        break
+                    counts = sel.sum(dim=1)
+                    lmax = int(counts.max())
+                    order = torch.argsort((~sel).to(torch.int8), dim=1, stable=True)[:, :lmax]
+                    valid = torch.arange(lmax, device=h.device)[None, :] < counts[:, None]
+                    gidx = order.unsqueeze(-1).expand(-1, -1, d)
+                    gate = torch.sigmoid(logit).gather(1, order) * valid
+                    out = self._think(torch.gather(z_in, 1, gidx))
+                    delta = (out - torch.gather(z, 1, gidx)) * gate.unsqueeze(-1)
+                    z = z.scatter_add(1, gidx, delta.to(z.dtype))
+                    depth = depth + sel.float()
+                    cand = sel
             stats = {"core_depth_mean": depth.mean().detach(),
                      "core_step1_frac": (depth > 0).float().mean().detach()}
             return z, aux, stats
 
         def init_cache(self, batch: int, device, dtype):
             return [[layer.init_cache(batch, device, dtype) for layer in self.layers]
-                    for _ in range(self.cfg.max_latent_steps)]
+                    for _ in range(self.cfg.infer_steps)]
 
         def step(self, z: torch.Tensor, cache) -> torch.Tensor:
             active = torch.ones(z.shape[0], dtype=torch.bool, device=z.device)
-            for k in range(self.cfg.max_latent_steps):
-                z_in = z + self.step_emb[k].to(z.dtype)
+            e_norm = self.inject_norm(z) if self.inject_norm is not None else None
+            for k in range(self.cfg.infer_steps):
+                z_in = self._round_input(z, e_norm, k)
                 logit = self.router(z_in).squeeze(-1).float()
                 active = active & (logit > 0)
                 if not bool(active.any()):
@@ -714,14 +1060,17 @@ if TORCH_AVAILABLE:
             self.config = config
 
             def build(kind: str) -> nn.Module:
-                return LocalAttentionBlock(config) if kind == "attn" else Mamba2Block(config)
+                if kind == "attn":
+                    return LocalAttentionBlock(config)
+                if kind == "gattn":
+                    return LocalAttentionBlock(config, is_global=True)
+                return recurrent_block(config)
 
+            enc_kinds, dec_kinds = model_layer_kinds(config)
             self.tok_embeddings = nn.Embedding(config.vocab_size, config.d_model)
-            self.encoder = nn.ModuleList(
-                [build(k) for k in layer_kinds(config.n_encoder_layers, config.encoder_attn_every)])
+            self.encoder = nn.ModuleList([build(k) for k in enc_kinds])
             self.core = RecurrentDepthCore(config)
-            self.decoder = nn.ModuleList(
-                [build(k) for k in layer_kinds(config.n_decoder_layers, config.decoder_attn_every)])
+            self.decoder = nn.ModuleList([build(k) for k in dec_kinds])
             self.final_norm = RMSNorm(config.d_model, eps=config.rms_norm_eps)
             self.lm_head = nn.Linear(config.d_model, config.vocab_size, bias=False)
             self.lm_head.weight = self.tok_embeddings.weight      # weight tying
@@ -931,6 +1280,18 @@ if TORCH_AVAILABLE:
                 raise ValueError(f"В упакованных весах нет параметров: {missing[:5]}{' ...' if len(missing) > 5 else ''}")
             model.load_state_dict(state)
             return model
+
+
+    def set_ternary_quantization(model: nn.Module, enabled: bool) -> None:
+        """
+        Включить / выключить троичное квантование всех слоёв BitLinear (веса и int8-активации) прямо во время
+        обучения — для разгона без квантования (train_lm.py --fp-warmup-steps). Настройки модели и экспорт не
+        меняются: в файл модель попадает троичной.
+        """
+        for m in model.modules():
+            if isinstance(m, BitLinear158):
+                m.ternary = enabled
+                m._wq_cache = None
 
 
     def reconfigure(model: "SLRNetLanguageModel", **overrides) -> "SLRNetLanguageModel":
@@ -1239,24 +1600,44 @@ def calculate_hardware_footprint(config: SLRNetConfig) -> Dict[str, float]:
     Честный подсчёт параметров и памяти для заданной конфигурации (формулы совпадают с PyTorch-
     моделью один в один — это проверяется в tests/). Ничего не «забыто»: в первой версии не
     учитывалась память фактов (84 млн параметров) и неверно считался размер SSM-блока.
+    Учитывает и части Singularity: Gated DeltaNet, глобальное внимание, затвор, QK-norm, ядро 2.0.
     """
-    D, V, di, N = config.d_model, config.vocab_size, config.d_inner, config.d_state
-    H, P, K = config.ssm_nheads, config.ssm_headdim, config.d_conv
-    conv_dim = di + 2 * N
-    hd, Hq, Hkv, Fh = config.head_dim, config.n_heads, config.n_kv_heads, config.mlp_hidden
+    D, V, K = config.d_model, config.vocab_size, config.d_conv
+    hd, Hq, Fh = config.head_dim, config.n_heads, config.mlp_hidden
 
-    ssm_tern = D * (di + conv_dim) + di * D
-    ssm_fp = D + (D * H + H) + (conv_dim * K + conv_dim) + 2 * H + di
-    attn_tern = D * (Hq + 2 * Hkv) * hd + Hq * hd * D
-    attn_fp = D + Hq * hd
-    if config.mlp_ratio > 0:
-        attn_tern += 2 * D * Fh
-        attn_fp += D + Fh
+    if config.ssm_type == "gdn":
+        H, dk, dv = config.gdn_nheads, config.gdn_dk, config.gdn_dv
+        key_dim, value_dim = H * dk, H * dv
+        conv_dim = 2 * key_dim + value_dim
+        rec_tern = D * (conv_dim + value_dim) + value_dim * D
+        rec_fp = D + (D * 2 * H + 2 * H) + (conv_dim * K + conv_dim) + H + dv
+        rec_state_bytes = H * dk * dv * 4 + conv_dim * (K - 1) * 2
+    else:
+        di, N = config.d_inner, config.d_state
+        H, P = config.ssm_nheads, config.ssm_headdim
+        conv_dim = di + 2 * N
+        rec_tern = D * (di + conv_dim) + di * D
+        rec_fp = D + (D * H + H) + (conv_dim * K + conv_dim) + 2 * H + di
+        rec_state_bytes = H * P * N * 4 + conv_dim * (K - 1) * 2
 
-    kinds = layer_kinds(config.n_encoder_layers, config.encoder_attn_every) + \
-        layer_kinds(config.n_decoder_layers, config.decoder_attn_every)
+    def attn_params(hkv: int) -> Tuple[int, int]:
+        tern = D * (Hq + 2 * hkv) * hd + Hq * hd * D
+        fp = D + Hq * hd
+        if config.attn_gate:
+            tern += D * Hq * hd
+        if config.qk_norm:
+            fp += 2 * hd
+        if config.mlp_ratio > 0:
+            tern += 2 * D * Fh
+            fp += D + Fh
+        return tern, fp
+
+    enc, dec = model_layer_kinds(config)
+    kinds = enc + dec
     n_ssm = kinds.count("ssm") + config.n_reasoning_layers
-    n_attn = kinds.count("attn")
+    n_local, n_global = kinds.count("attn"), kinds.count("gattn")
+    local_tern, local_fp = attn_params(config.n_kv_heads)
+    global_tern, global_fp = attn_params(config.global_kv)
 
     if config.use_memory:
         mem_tern = D * config.memory_key_dim
@@ -1265,9 +1646,11 @@ def calculate_hardware_footprint(config: SLRNetConfig) -> Dict[str, float]:
     else:
         mem_tern = mem_fp = mem_values = 0
     core_fp = (D + 1) + config.max_latent_steps * D
+    if config.core_inject:
+        core_fp += D + config.max_latent_steps
 
-    ternary = n_ssm * ssm_tern + n_attn * attn_tern + mem_tern
-    fp_small = n_ssm * ssm_fp + n_attn * attn_fp + mem_fp + core_fp + D
+    ternary = n_ssm * rec_tern + n_local * local_tern + n_global * global_tern + mem_tern
+    fp_small = n_ssm * rec_fp + n_local * local_fp + n_global * global_fp + mem_fp + core_fp + D
     embedding = V * D
     total = ternary + fp_small + embedding + mem_values
 
@@ -1286,10 +1669,12 @@ def calculate_hardware_footprint(config: SLRNetConfig) -> Dict[str, float]:
     packed_mb = sum(parts.values())
     fp16_mb = 2.0 * total / mb
 
-    # Память на генерацию (кэш) — не зависит от длины контекста
-    ssm_state_layers = kinds.count("ssm") + config.n_reasoning_layers * config.max_latent_steps
-    ssm_cache = ssm_state_layers * (H * P * N * 4 + conv_dim * (K - 1) * 2)
-    attn_cache = n_attn * 2 * config.window_size * Hkv * hd * 2
+    # Память на генерацию (кэш). Рекуррентные слои и локальное внимание — не зависят от длины разговора;
+    # глобальное внимание хранит ключи всего разговора — отдельной строкой, на 1000 токенов.
+    ssm_state_layers = kinds.count("ssm") + config.n_reasoning_layers * config.infer_steps
+    ssm_cache = ssm_state_layers * rec_state_bytes
+    attn_cache = n_local * 2 * config.window_size * config.n_kv_heads * hd * 2
+    global_per_1k = n_global * 2 * 1000 * config.global_kv * hd * 2
     return {
         "total_params_millions": total / 1e6,
         "ternary_params_millions": ternary / 1e6,
@@ -1300,6 +1685,7 @@ def calculate_hardware_footprint(config: SLRNetConfig) -> Dict[str, float]:
         **parts,
         "fp16_model_mb": fp16_mb,
         "generation_cache_mb": (ssm_cache + attn_cache) / mb,
+        "global_cache_mb_per_1k_tokens": global_per_1k / mb,
     }
 
 
