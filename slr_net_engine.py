@@ -29,6 +29,14 @@ SLR-Net (Sparse Latent-Reasoning Network) — эталонная архитек�
 5. Память фактов с произведением ключей (Product-Key Memory: Lample et al., arXiv:1907.05242;
    Memory Layers at Scale, arXiv:2412.09764). Поиск top-k среди N = n_keys^2 ячеек стоит O(sqrt(N)),
    а не O(N): ключ делится на две половины, каждая ищется среди n_keys подключей.
+   memory_keys=0 убирает память совсем: в модели «mini» она оказалась бесполезной (см. weights_xray.py).
+
+6. Эмбеддинг, сжатый во время обучения (quantization-aware training, как в BitNet для троичных слоёв,
+   и как 4-битные таблицы в llama.cpp/Q4_0): при embed_bits > 0 векторы слов в каждом проходе
+   округляются до embed_bits бит (свой масштаб на каждую группу из embed_group чисел строки), градиент
+   идёт к «мастер-весам» через STE. Модель с самого начала учится жить с округлёнными векторами, поэтому
+   сжатие эмбеддинга (он же выходной слой) в 4 раза почти ничего не стоит — в отличие от округления
+   готовой модели (−6 пунктов на задачах).
 
 Файл содержит:
 - Раздел 1: реализацию на PyTorch (обучение на GPU/CPU, инкрементальная генерация с кэшем O(1)
@@ -90,9 +98,12 @@ class SLRNetConfig:
     router_capacity: float = 0.5      # Доля токенов, проходящих на каждый следующий шаг (0.5, 0.25, ...)
     router_aux_coef: float = 0.01     # Вес вспомогательного BCE-лосса роутера
     # --- Память фактов (product keys) ---
-    memory_keys: int = 256            # Ячеек памяти = memory_keys^2 (256^2 = 65536)
+    memory_keys: int = 256            # Ячеек памяти = memory_keys^2 (256^2 = 65536); 0 — без памяти
     memory_key_dim: int = 256
     memory_top_k: int = 8
+    # --- Эмбеддинг (он же выходной слой) ---
+    embed_bits: int = 0               # 0 — float16 как раньше; 2..8 — сжатие во время обучения до стольких бит
+    embed_group: int = 64             # Сколько чисел строки эмбеддинга делят один масштаб (float16)
     # --- Прочее ---
     ternary: bool = True              # False — обычные FP-веса (полезно для сравнения качества)
     rms_norm_eps: float = 1e-6
@@ -115,6 +126,10 @@ class SLRNetConfig:
         return self.memory_keys ** 2
 
     @property
+    def use_memory(self) -> bool:
+        return self.memory_keys > 0
+
+    @property
     def mlp_hidden(self) -> int:
         return int(self.mlp_ratio * self.d_model)
 
@@ -123,9 +138,15 @@ class SLRNetConfig:
         assert self.d_model % self.n_heads == 0, "d_model должно делиться на n_heads"
         assert self.n_heads % self.n_kv_heads == 0, "n_heads должно делиться на n_kv_heads"
         assert self.head_dim % 2 == 0, "head_dim должен быть чётным (RoPE)"
-        assert self.memory_key_dim % 2 == 0, "memory_key_dim должен быть чётным (product keys)"
         assert 0.0 < self.router_capacity <= 1.0
-        assert self.memory_top_k <= self.memory_keys
+        assert self.memory_keys >= 0
+        if self.use_memory:
+            assert self.memory_key_dim % 2 == 0, "memory_key_dim должен быть чётным (product keys)"
+            assert self.memory_top_k <= self.memory_keys
+        if self.embed_bits:
+            assert 2 <= self.embed_bits <= 8, "embed_bits: 0 (float16) или от 2 до 8"
+            assert self.embed_group > 0 and self.d_model % self.embed_group == 0, \
+                "d_model должно делиться на embed_group"
 
     def to_dict(self) -> Dict[str, object]:
         return asdict(self)
@@ -147,6 +168,17 @@ PRESETS: Dict[str, Dict[str, object]] = {
         n_encoder_layers=6, encoder_attn_every=3, n_reasoning_layers=2,
         n_decoder_layers=3, decoder_attn_every=3, n_heads=5, n_kv_heads=1,
         window_size=128, max_latent_steps=3, memory_keys=64, memory_key_dim=128, memory_top_k=4,
+    ),
+    # «mini2» — тот же файл ~9 МБ, что у «mini», но перераспределённый: память фактов (2.4 МБ, не работала)
+    # убрана, эмбеддинг сжимается до 4 бит прямо при обучении (4.9 -> 2.1 МБ), а освободившиеся ~6 МБ отданы
+    # вычислениям — в первую очередь вниманию: 6 слоёв внимания вместо 3, у каждой из 8 голов свои ключи
+    # (было 5 голов на 1 общий ключ), окно 256 токенов (весь контекст обучения) вместо 128.
+    # Вычисляющие троичные слои: 1.6 -> 6 МБ. На CPU с bf16 (AMX) учится ~2300 токенов/с.
+    "mini2": dict(
+        vocab_size=8192, d_model=512, d_state=32, ssm_headdim=64, ssm_chunk=32,
+        n_encoder_layers=8, encoder_attn_every=2, n_reasoning_layers=2,
+        n_decoder_layers=4, decoder_attn_every=2, n_heads=8, n_kv_heads=8,
+        window_size=256, max_latent_steps=3, memory_keys=0, embed_bits=4, embed_group=64,
     ),
     "small": dict(
         vocab_size=16384, d_model=384, d_state=64, ssm_headdim=64,
@@ -259,6 +291,30 @@ if TORCH_AVAILABLE:
             gamma = float(w.abs().mean().clamp(min=self.eps))
             trits = (w / gamma).round().clamp(-1, 1).to(torch.int8).cpu().numpy()
             return trits, gamma
+
+    # ---------------------------------------------------------------- Сжатый эмбеддинг
+
+    def group_quantize(w: torch.Tensor, bits: int, group: int) -> Tuple[torch.Tensor, torch.Tensor]:
+        """
+        Симметричное квантование строк по группам: каждая строка делится на группы по `group` чисел,
+        у группы свой масштаб s = max|w| / qmax (qmax = 2^(bits-1) - 1, для 4 бит — 7), число -> round(w / s).
+        Масштаб сразу округляется до float16 — ровно так он хранится в файле, поэтому модель при обучении
+        видит в точности те же числа, что будут после упаковки.
+        Возвращает (целые q той же формы, что w, во float; масштабы (строк, групп)).
+        Квантование идемпотентно: w' = q * s даёт снова те же q и s (это нужно для загрузки из файла).
+        """
+        rows, cols = w.shape
+        qmax = 2 ** (bits - 1) - 1
+        g = w.float().reshape(rows, cols // group, group)
+        scale = (g.abs().amax(dim=-1) / qmax).clamp(min=1e-5).half().float()
+        q = (g / scale[..., None]).round().clamp(-qmax, qmax)
+        return q.reshape(rows, cols), scale
+
+    def fake_quant_groups(w: torch.Tensor, bits: int, group: int) -> torch.Tensor:
+        """Прямой проход — округлённые веса, обратный — градиент как есть (STE), как в BitLinear158."""
+        q, scale = group_quantize(w.detach(), bits, group)
+        w_q = (q.reshape(w.shape[0], -1, group) * scale[..., None]).reshape(w.shape).to(w.dtype)
+        return w + (w_q - w).detach()
 
     # ---------------------------------------------------------------- RoPE
 
@@ -574,14 +630,14 @@ if TORCH_AVAILABLE:
             super().__init__()
             self.cfg = cfg
             self.layers = nn.ModuleList([Mamba2Block(cfg) for _ in range(cfg.n_reasoning_layers)])
-            self.memory = ProductKeyMemory(cfg)
+            self.memory = ProductKeyMemory(cfg) if cfg.use_memory else None
             self.router = nn.Linear(cfg.d_model, 1)
             self.step_emb = nn.Parameter(torch.randn(cfg.max_latent_steps, cfg.d_model) * cfg.init_std)
             nn.init.normal_(self.router.weight, std=cfg.init_std)
             nn.init.zeros_(self.router.bias)
 
         def _think(self, z_in: torch.Tensor) -> torch.Tensor:
-            h = self.memory(z_in)
+            h = self.memory(z_in) if self.memory is not None else z_in
             for layer in self.layers:
                 h = layer(h)
             return h
@@ -635,7 +691,7 @@ if TORCH_AVAILABLE:
                 active = active & (logit > 0)
                 if not bool(active.any()):
                     break
-                h = self.memory(z_in)
+                h = self.memory(z_in) if self.memory is not None else z_in
                 for layer, c in zip(self.layers, cache[k]):
                     h = layer.step(h, c, active=active)
                 gate = torch.sigmoid(logit).to(z.dtype)[:, None]
@@ -647,8 +703,9 @@ if TORCH_AVAILABLE:
     class SLRNetLanguageModel(nn.Module):
         """
         Прелюдия (Mamba-2 + локальное внимание) -> ядро мышления (рекуррентная глубина + роутер +
-        память фактов) -> кода (Mamba-2 + локальное внимание) -> RMSNorm -> выход (связан с эмбеддингом).
-        Все слои каузальные: модель — авторегрессионная языковая модель.
+        память фактов, если она есть) -> кода (Mamba-2 + локальное внимание) -> RMSNorm -> выход (связан с
+        эмбеддингом). Все слои каузальные: модель — авторегрессионная языковая модель.
+        При embed_bits > 0 эмбеддинг (и выходной слой) во всех проходах округляется до embed_bits бит.
         """
 
         def __init__(self, config: SLRNetConfig):
@@ -676,14 +733,40 @@ if TORCH_AVAILABLE:
             for name, p in self.named_parameters():
                 if name.endswith(("out_proj.weight", "o_proj.weight", "down.weight")):
                     nn.init.normal_(p, std=config.init_std / math.sqrt(2 * n_res))
+            self._emb_cache: Optional[Tuple[Tuple[int, int, torch.dtype], torch.Tensor]] = None
 
         def num_params(self) -> Dict[str, int]:
             total = sum(p.numel() for p in self.parameters())
             ternary = sum(m.weight.numel() for m in self.modules()
                           if isinstance(m, BitLinear158) and m.ternary)
-            memory = self.core.memory.values.weight.numel()
+            memory = self.core.memory.values.weight.numel() if self.core.memory is not None else 0
             return {"total": total, "ternary": ternary, "memory_values": memory,
                     "embedding": self.tok_embeddings.weight.numel()}
+
+        def embedding_weight(self) -> torch.Tensor:
+            """Таблица векторов слов, которой модель реально пользуется (на входе и на выходе)."""
+            w = self.tok_embeddings.weight
+            bits = self.config.embed_bits
+            if not bits:
+                return w
+            if torch.is_grad_enabled():
+                return fake_quant_groups(w, bits, self.config.embed_group)
+            # Инференс: округляем один раз, а не на каждом токене генерации
+            key = (w.data_ptr(), w._version, w.dtype)
+            if self._emb_cache is None or self._emb_cache[0] != key:
+                self._emb_cache = (key, fake_quant_groups(w, bits, self.config.embed_group).detach())
+            return self._emb_cache[1]
+
+        def _embed(self, ids: torch.Tensor) -> torch.Tensor:
+            if not self.config.embed_bits:
+                return self.tok_embeddings(ids)
+            return F.embedding(ids, self.embedding_weight())
+
+        def _logits(self, h: torch.Tensor) -> torch.Tensor:
+            h = self.final_norm(h)
+            if not self.config.embed_bits:
+                return self.lm_head(h)
+            return F.linear(h, self.embedding_weight().to(h.dtype))
 
         def forward(self, input_ids: torch.Tensor, targets: Optional[torch.Tensor] = None,
                     routing: Optional[str] = None):
@@ -693,13 +776,13 @@ if TORCH_AVAILABLE:
             синхронизировать GPU на каждом шаге).
             """
             routing = routing or ("topk" if self.training else "threshold")
-            h = self.tok_embeddings(input_ids)
+            h = self._embed(input_ids)
             for layer in self.encoder:
                 h = layer(h)
             h, aux, stats = self.core(h, routing)
             for layer in self.decoder:
                 h = layer(h)
-            logits = self.lm_head(self.final_norm(h))
+            logits = self._logits(h)
             loss = None
             if targets is not None:
                 ce = F.cross_entropy(logits.float().reshape(-1, logits.size(-1)), targets.reshape(-1),
@@ -725,13 +808,13 @@ if TORCH_AVAILABLE:
         @torch.no_grad()
         def step(self, token_ids: torch.Tensor, cache) -> torch.Tensor:
             """Один токен на строку (b,) -> логиты (b, V). Память на токен не растёт (SSM) / O(W) (внимание)."""
-            h = self.tok_embeddings(token_ids)
+            h = self._embed(token_ids)
             for layer, c in zip(self.encoder, cache["encoder"]):
                 h = layer.step(h, c)
             h = self.core.step(h, cache["core"])
             for layer, c in zip(self.decoder, cache["decoder"]):
                 h = layer.step(h, c)
-            return self.lm_head(self.final_norm(h))
+            return self._logits(h)
 
         @torch.no_grad()
         def generate(self, input_ids: torch.Tensor, max_new_tokens: int = 100, temperature: float = 0.8,
@@ -780,9 +863,20 @@ if TORCH_AVAILABLE:
 
         @torch.no_grad()
         def export_packed(self) -> Dict[str, np.ndarray]:
-            """Троичные матрицы -> 5 тритов в байт (+gamma), остальное -> float16."""
+            """
+            Троичные матрицы -> 5 тритов в байт (+gamma); эмбеддинг при embed_bits > 0 -> целые по
+            embed_bits бит (до 4 бит — по два в байт) + масштабы групп во float16; остальное -> float16.
+            """
             packed: Dict[str, np.ndarray] = {}
             ternary_weights = set()
+            if self.config.embed_bits:
+                q, scale = group_quantize(self.tok_embeddings.weight, self.config.embed_bits,
+                                          self.config.embed_group)
+                packed["tok_embeddings.weight.qdata"] = pack_int_matrix(
+                    q.to(torch.int8).cpu().numpy(), self.config.embed_bits)
+                packed["tok_embeddings.weight.qscale"] = scale.cpu().numpy().astype(np.float16)
+                packed["tok_embeddings.weight.shape"] = np.array(q.shape, dtype=np.int64)
+                ternary_weights.add("tok_embeddings.weight")
             for name, mod in self.named_modules():
                 if isinstance(mod, BitLinear158) and mod.ternary:
                     trits, gamma = mod.export_ternary()
@@ -819,6 +913,14 @@ if TORCH_AVAILABLE:
                 nonzero = float(np.count_nonzero(trits)) / max(1, trits.size)
                 scale = gamma / nonzero if nonzero > 0 else 0.0
                 state[name] = torch.from_numpy(trits * scale)
+            if "tok_embeddings.weight.qdata" in packed:
+                if not config.embed_bits:
+                    raise ValueError("Эмбеддинг в файле сжат, а в настройках модели embed_bits = 0")
+                shape = tuple(int(s) for s in packed["tok_embeddings.weight.shape"])
+                q = unpack_int_matrix(packed["tok_embeddings.weight.qdata"], shape, config.embed_bits)
+                scale = np.asarray(packed["tok_embeddings.weight.qscale"], dtype=np.float32)
+                w = q.astype(np.float32).reshape(shape[0], -1, config.embed_group) * scale[..., None]
+                state["tok_embeddings.weight"] = torch.from_numpy(w.reshape(shape))
             own = model.state_dict()
             for key, value in packed.items():
                 if key in own and key not in state:
@@ -829,6 +931,22 @@ if TORCH_AVAILABLE:
                 raise ValueError(f"В упакованных весах нет параметров: {missing[:5]}{' ...' if len(missing) > 5 else ''}")
             model.load_state_dict(state)
             return model
+
+
+    def reconfigure(model: "SLRNetLanguageModel", **overrides) -> "SLRNetLanguageModel":
+        """
+        Та же модель с изменёнными настройками, которые не меняют форму остальных весов: например,
+        memory_keys=0 (выбросить память фактов) или embed_bits=4 (дальше учиться со сжатым эмбеддингом).
+        Все веса, которые есть в обеих моделях, копируются как есть.
+        """
+        cfg = SLRNetConfig(**{**model.config.to_dict(), **overrides})
+        new = SLRNetLanguageModel(cfg).to(model.tok_embeddings.weight.device)
+        old_state, own = model.state_dict(), new.state_dict()
+        bad = [k for k in own if k not in old_state or old_state[k].shape != own[k].shape]
+        if bad:
+            raise ValueError(f"Эти настройки меняют форму весов, перенести нельзя: {bad[:5]}")
+        new.load_state_dict({k: old_state[k] for k in own})
+        return new
 
 
 # =============================================================================
@@ -879,6 +997,33 @@ def unpack_ternary_matrix(packed: np.ndarray, shape: Tuple[int, ...]) -> np.ndar
     powers = np.array([1, 3, 9, 27, 81], dtype=np.int16)
     trits = ((val // powers) % 3) - 1
     return trits.ravel()[:n_total].reshape(shape).astype(np.int8)
+
+
+def pack_int_matrix(q: np.ndarray, bits: int) -> np.ndarray:
+    """
+    Целые из [-(2^(bits-1)-1), 2^(bits-1)-1] -> байты. До 4 бит — по два числа в байт (младшие 4 бита —
+    чётный элемент), число хранится со сдвигом +8: 4-битный эмбеддинг занимает ровно полбайта на число.
+    5–8 бит — по байту (int8 как есть).
+    """
+    flat = np.asarray(q, dtype=np.int8).reshape(-1)
+    if bits > 4:
+        return flat.view(np.uint8).copy()
+    u = (flat.astype(np.int16) + 8).astype(np.uint8)
+    if u.size % 2:
+        u = np.concatenate([u, np.full(1, 8, dtype=np.uint8)])
+    return (u[0::2] | (u[1::2] << 4)).astype(np.uint8)
+
+
+def unpack_int_matrix(data: np.ndarray, shape: Tuple[int, ...], bits: int) -> np.ndarray:
+    """Обратная операция к pack_int_matrix: байты -> int8 матрица формы shape."""
+    n = int(np.prod(shape))
+    data = np.asarray(data, dtype=np.uint8).reshape(-1)
+    if bits > 4:
+        return data[:n].view(np.int8).reshape(shape).copy()
+    u = np.empty(data.size * 2, dtype=np.int16)
+    u[0::2] = data & 0x0F
+    u[1::2] = data >> 4
+    return (u[:n] - 8).astype(np.int8).reshape(shape)
 
 
 def _rms(x: np.ndarray, eps: float = 1e-6) -> Tuple[np.ndarray, np.ndarray]:
@@ -1113,9 +1258,12 @@ def calculate_hardware_footprint(config: SLRNetConfig) -> Dict[str, float]:
     n_ssm = kinds.count("ssm") + config.n_reasoning_layers
     n_attn = kinds.count("attn")
 
-    mem_tern = D * config.memory_key_dim
-    mem_fp = D + 2 * config.memory_keys * (config.memory_key_dim // 2) + 1
-    mem_values = config.memory_slots * D
+    if config.use_memory:
+        mem_tern = D * config.memory_key_dim
+        mem_fp = D + 2 * config.memory_keys * (config.memory_key_dim // 2) + 1
+        mem_values = config.memory_slots * D
+    else:
+        mem_tern = mem_fp = mem_values = 0
     core_fp = (D + 1) + config.max_latent_steps * D
 
     ternary = n_ssm * ssm_tern + n_attn * attn_tern + mem_tern
@@ -1124,7 +1272,18 @@ def calculate_hardware_footprint(config: SLRNetConfig) -> Dict[str, float]:
     total = ternary + fp_small + embedding + mem_values
 
     mb = 1024.0 ** 2
-    packed_mb = (ternary / 5.0 + 2 * fp_small + 2 * embedding + 2 * mem_values) / mb
+    if config.embed_bits:
+        # целые по embed_bits бит (до 4 бит — два в байт) + масштаб float16 на каждую группу строки
+        emb_bytes = embedding * (0.5 if config.embed_bits <= 4 else 1.0) + 2 * V * (D // config.embed_group)
+    else:
+        emb_bytes = 2.0 * embedding
+    parts = {
+        "packed_ternary_mb": ternary / 5.0 / mb,
+        "packed_embedding_mb": emb_bytes / mb,
+        "packed_memory_mb": 2.0 * mem_values / mb,
+        "packed_other_mb": 2.0 * fp_small / mb,
+    }
+    packed_mb = sum(parts.values())
     fp16_mb = 2.0 * total / mb
 
     # Память на генерацию (кэш) — не зависит от длины контекста
@@ -1138,6 +1297,7 @@ def calculate_hardware_footprint(config: SLRNetConfig) -> Dict[str, float]:
         "memory_params_millions": mem_values / 1e6,
         "other_fp_params_millions": fp_small / 1e6,
         "packed_model_mb": packed_mb,
+        **parts,
         "fp16_model_mb": fp16_mb,
         "generation_cache_mb": (ssm_cache + attn_cache) / mb,
     }
@@ -1150,7 +1310,7 @@ def run_verification_suite() -> None:
     print("=" * 78)
 
     print("\n[1] ЧЕСТНЫЙ РАСЧЁТ РАЗМЕРА МОДЕЛИ ПО ПРЕСЕТАМ:")
-    for name in ("tiny", "small", "base", "large"):
+    for name in ("tiny", "mini", "mini2", "small", "base", "large"):
         fp = calculate_hardware_footprint(make_config(name))
         print(f"    • {name:5s}: {fp['total_params_millions']:7.1f} млн параметров "
               f"(троичных {fp['ternary_params_millions']:.1f}, эмбеддинг {fp['embedding_params_millions']:.1f}, "

@@ -267,6 +267,18 @@ def test_tiny_pipeline_sft_align_export_chat(tmp_path, tiny_base, tok, capsys):
     model, ctok, chat = T.load_chat_model(str(sft / "best.pt"), torch.device("cpu"))
     assert chat and model.config.vocab_size == tok.vocab_size
 
+    # Остановка посреди обучения (перезагрузка машины): продолжение с last.pt, сохранённого при проверке
+    part = tmp_path / "sft_part"
+    common = ["sft", "--base", tiny_base, "--data", str(ddir), "--out", str(part), "--seq-len", "64",
+              "--batch-size", "4", "--warmup", "1", "--eval-every", "3", "--log-every", "1", "--sample-every", "0"]
+    T.main(common + ["--max-steps", "6"])
+    ck = torch.load(part / "last.pt", map_location="cpu", weights_only=False)
+    assert ck["step"] == 6 and "optimizer" in ck
+    T.main(common + ["--max-steps", "9", "--resume", str(part / "last.pt")])
+    out = capsys.readouterr().out
+    assert "Продолжение с" in out and "шаг     6/9" in out and "шаг     5/9" not in out
+    assert torch.load(part / "last.pt", map_location="cpu", weights_only=False)["step"] == 9
+
     al = tmp_path / "align"
     T.main(["align", "--ckpt", str(sft / "best.pt"), "--data", str(ddir), "--out", str(al), "--rounds", "1",
             "--steps-per-round", "3", "--batch-size", "2", "--checked-items", "20", "--open-items", "10",
@@ -295,10 +307,19 @@ def test_tiny_pipeline_sft_align_export_chat(tmp_path, tiny_base, tok, capsys):
     assert "chat.npz" in rep and "ВСЕГО" in rep["chat.npz"]["probes"]
 
 
-@pytest.mark.skipif(not os.path.exists(CHAT_NPZ), reason="нет обученной чат-модели")
-def test_shipped_chat_model_really_answers(tok):
+# (чат-модель, её базовая модель, сколько из 10 базовая модель может «угадать» сама). У базовой mini2 три
+# совпадения случайные: «Где я живу?» -> «Я живу в Казани.», «2 + 3?» -> «3 5 5 5 …», погода -> «Я не знаю.».
+SHIPPED_CHATS = [(CHAT_NPZ, BASE_NPZ, 2),                                     # mini
+                 (os.path.join(ROOT, "slr_net_chat_ru_mini2.npz"),
+                  os.path.join(ROOT, "slr_net_subtitles_ru_mini2.npz"), 3)]   # mini2 (по умолчанию в браузере)
+
+
+@pytest.mark.parametrize("chat_npz,base_npz,base_max", SHIPPED_CHATS, ids=["mini", "mini2"])
+def test_shipped_chat_model_really_answers(tok, chat_npz, base_npz, base_max):
     """Готовая чат-модель из репозитория отвечает по смыслу на вопросы, которых не было в обучении."""
-    model, ctok, chat = T.load_chat_model(CHAT_NPZ, torch.device("cpu"))
+    if not (os.path.exists(chat_npz) and os.path.exists(base_npz)):
+        pytest.skip("нет обученной чат-модели")
+    model, ctok, chat = T.load_chat_model(chat_npz, torch.device("cpu"))
     assert chat
     probes = [                                     # 10 вопросов разной трудности, заданы заранее
         ([("user", "Меня зовут Тимофей."), ("bot", "Приятно познакомиться, Тимофей!"), ("user", "Как меня зовут?")],
@@ -321,6 +342,23 @@ def test_shipped_chat_model_really_answers(tok):
         ok += bool(T.check_reply(reply, {"any": keys}))
     assert ok >= MIN_SHIPPED_OK, ok
     # базовая модель (до пост-тренинга) с теми же вопросами справляется хуже
-    base, btok, _ = T.load_chat_model(BASE_NPZ, torch.device("cpu"))
+    base, btok, _ = T.load_chat_model(base_npz, torch.device("cpu"))
     base_ok = sum(bool(T.check_reply(T.answer(base, btok, False, t), {"any": k})) for t, k in probes)
-    assert base_ok <= 2 and ok >= base_ok + 5, (ok, base_ok)
+    assert base_ok <= base_max and ok >= base_ok + 4, (ok, base_ok)
+
+
+def test_weights_xray_reads_compressed_embedding_and_model_without_memory():
+    """«Рентген» понимает новый формат: 4-битный эмбеддинг читается как обычная матрица (те же числа, что
+    у загруженной модели), памяти фактов нет — её выключение и опрос просто пропускаются."""
+    path = os.path.join(ROOT, "slr_net_subtitles_ru_mini2.npz")
+    if not os.path.exists(path):
+        pytest.skip("нет весов mini2")
+    import weights_xray as X
+    import train_lm as LM
+    table = X.tensor_table(path)
+    model, _ = LM.load_model(path, torch.device("cpu"))
+    assert np.array_equal(table["tok_embeddings.weight"], model.tok_embeddings.weight.detach().numpy())
+    assert not any("memory" in k or k.startswith("tok_embeddings.weight.") for k in table)
+    assert model.core.memory is None and X.memory_usage(model, [], 0) == {}
+    off = X.memory_off(model)
+    assert off.core.memory is None

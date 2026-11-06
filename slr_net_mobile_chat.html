@@ -372,7 +372,7 @@
             Обычная<small>поиск по памяти, логика</small>
           </button>
           <button id="modeMiniBtn" type="button" class="mode-btn" role="tab" aria-selected="false">
-            mini · LLM<small>собеседник, 12 млн параметров</small>
+            mini · LLM<small>собеседник, 36 млн параметров</small>
           </button>
         </div>
       </div>
@@ -381,12 +381,12 @@
       <div id="miniPanel" class="mini-panel hidden">
         <div id="miniLoadBox" class="space-y-2">
           <div class="leading-snug">
-            <b class="text-cyan-300">mini</b> — генеративная модель-собеседник (12.3 млн параметров): обучена на 2.3 ГБ
+            <b class="text-cyan-300">mini2</b> — генеративная модель-собеседник (36 млн параметров): обучена на 2.3 ГБ
             русских субтитров, а затем дообучена вести диалог. Отвечает коротко, помнит, что вы сказали в разговоре,
-            честно говорит «не знаю». Веса (8.9 МБ) загружаются один раз и сохраняются в браузере.
+            честно говорит «не знаю». Веса (8.1 МБ) загружаются один раз и сохраняются в браузере.
           </div>
           <div class="mini-row">
-            <button id="miniDownloadBtn" type="button" class="mini-btn primary">⬇ Скачать собеседника с GitHub (8.9 МБ)</button>
+            <button id="miniDownloadBtn" type="button" class="mini-btn primary">⬇ Скачать собеседника с GitHub (8.1 МБ)</button>
             <button id="miniPickBtn" type="button" class="mini-btn">📂 Выбрать файл .npz</button>
             <input id="miniFileInput" type="file" accept=".npz,application/octet-stream" class="hidden" />
           </div>
@@ -398,9 +398,9 @@
         <div id="miniReadyBox" class="hidden space-y-1">
           <div id="miniStatusText" class="text-[11px] text-emerald-300 leading-snug">✅ mini готова</div>
           <div id="miniUpdateBox" class="hidden mini-row text-[11px] text-amber-200 leading-snug">
-            В браузере сохранена старая версия собеседника. На GitHub есть новая: логика, «не знаю — объясни»,
-            ответ по объяснению.
-            <button id="miniUpdateBtn" type="button" class="mini-btn primary">⬇ Обновить (8.9 МБ)</button>
+            В браузере сохранена старая версия собеседника. На GitHub есть новая — mini2: втрое больше вычислений,
+            больше внимания, лучше переписывает имена и слова из разговора.
+            <button id="miniUpdateBtn" type="button" class="mini-btn primary">⬇ Обновить (8.1 МБ)</button>
           </div>
           <div id="miniUpgradeBox" class="hidden mini-row text-[11px] text-amber-200 leading-snug">
             Загружена старая модель-продолжатель субтитров: она не отвечает на вопросы, а дописывает сцену.
@@ -757,11 +757,12 @@
   <!-- ========================================================================= -->
   <script>
     // =============================================================================================
-    //  SLR-Net «mini» — настоящая обученная LLM (12.3 млн параметров, русские субтитры) в браузере.
-    //  Читает тот же файл весов slr_net_subtitles_ru_mini.npz, что и train_lm.py, и повторяет
+    //  SLR-Net «mini»/«mini2» — настоящая обученная LLM (русские субтитры + диалоги) в браузере.
+    //  Читает те же файлы весов .npz, что и train_lm.py / train_chat.py, и повторяет
     //  пошаговый проход SLRNetLanguageModel.step() из slr_net_engine.py:
-    //    эмбеддинг -> 6 слоёв (Mamba-2, каждый 3-й — локальное внимание + MLP) -> ядро мышления
-    //    (память фактов + 2 слоя Mamba-2, до 3 повторов, решает роутер) -> 3 слоя -> RMSNorm -> логиты.
+    //    эмбеддинг -> прелюдия (Mamba-2 и локальное внимание + MLP) -> ядро мышления
+    //    (память фактов, если есть, + 2 слоя Mamba-2, до 3 повторов, решает роутер) -> кода -> RMSNorm -> логиты.
+    //  mini2 (по умолчанию): без памяти фактов, эмбеддинг сжат до 4 бит, 6 слоёв внимания, 8 голов, окно 256.
     //  Троичные матрицы {-1, 0, +1} умножаются на int8-активации целочисленно (как в BitNet b1.58).
     //  Совпадение с PyTorch проверяется браузерным тестом (tests/test_mobile_html.py).
     // =============================================================================================
@@ -1361,6 +1362,27 @@
         }
       }
 
+      // Эмбеддинг: float16 (старые модели) или сжатый при обучении — целые по embed_bits бит (до 4 бит — по два
+      // в байте, со сдвигом +8) и масштаб float16 на каждую группу из embed_group чисел строки (как from_packed).
+      function loadEmbedding(T, cfg) {
+        if (!T.has("tok_embeddings.weight.qdata")) return T.get("tok_embeddings.weight").data;
+        const shape = T.get("tok_embeddings.weight.shape").data, V = shape[0], D = shape[1];
+        const bits = cfg.embed_bits, G = cfg.embed_group, ng = D / G;
+        const q = T.get("tok_embeddings.weight.qdata").data, sc = T.get("tok_embeddings.weight.qscale").data;
+        if (!(bits >= 2 && bits <= 8) || D % G !== 0) throw new Error("Повреждены настройки сжатого эмбеддинга");
+        const out = new Float32Array(V * D);
+        for (let r = 0, i = 0; r < V; r++) {
+          for (let g = 0; g < ng; g++) {
+            const s = sc[r * ng + g];
+            for (let k = 0; k < G; k++, i++) {
+              const v = bits <= 4 ? ((i & 1) ? (q[i >> 1] >> 4) : (q[i >> 1] & 15)) - 8 : (q[i] << 24) >> 24;
+              out[i] = v * s;
+            }
+          }
+        }
+        return out;
+      }
+
       function layerKinds(n, every) {
         return Array.from({ length: n }, (_, i) => (every > 0 && (i + 1) % every === 0 ? "attn" : "ssm"));
       }
@@ -1370,12 +1392,12 @@
           this.cfg = cfg;
           this.D = cfg.d_model;
           this.V = cfg.vocab_size;
-          this.emb = T.get("tok_embeddings.weight").data;
+          this.emb = loadEmbedding(T, cfg);
           const build = (kind, p) => (kind === "attn" ? new AttentionLayer(T, p, cfg) : new Mamba2Layer(T, p, cfg));
           this.encoder = layerKinds(cfg.n_encoder_layers, cfg.encoder_attn_every).map((k, i) => build(k, "encoder." + i));
           this.decoder = layerKinds(cfg.n_decoder_layers, cfg.decoder_attn_every).map((k, i) => build(k, "decoder." + i));
           this.coreLayers = Array.from({ length: cfg.n_reasoning_layers }, (_, i) => new Mamba2Layer(T, "core.layers." + i, cfg));
-          this.memory = new ProductKeyMemory(T, "core.memory", cfg);
+          this.memory = cfg.memory_keys > 0 ? new ProductKeyMemory(T, "core.memory", cfg) : null;   // 0 — памяти нет
           this.routerW = T.get("core.router.weight").data;
           this.routerB = T.get("core.router.bias").data[0];
           this.stepEmb = T.get("core.step_emb").data;
@@ -1392,7 +1414,7 @@
             if (l instanceof Mamba2Layer) { countLin(l.inProj); countLin(l.outProj); }
             else { countLin(l.qkv); countLin(l.oProj); if (l.hasMlp) { countLin(l.up); countLin(l.down); } }
           }
-          countLin(this.memory.query);
+          if (this.memory) countLin(this.memory.query);
         }
 
         newState() {
@@ -1421,7 +1443,7 @@
               logit += this.routerW[i] * zin[i];
             }
             if (!(logit > 0)) break;
-            this.memory.apply(zin, hc);
+            if (this.memory) this.memory.apply(zin, hc); else hc.set(zin);
             this.coreLayers.forEach((l, i) => l.step(hc, st.core[k][i]));
             const g = sigmoid(logit);
             for (let i = 0; i < D; i++) z[i] += g * (hc[i] - z[i]);
@@ -3394,13 +3416,13 @@
     }
 
     // =============================================================================================
-    //  Режим «mini»: обученная LLM (движок SLRMini выше). По умолчанию — собеседник
-    //  slr_net_chat_ru_mini.npz (train_chat.py: дообучение диалогу). Старую модель-продолжатель
-    //  slr_net_subtitles_ru_mini.npz тоже можно загрузить файлом — тогда она дописывает сцену из фильма.
+    //  Режим «mini»: обученная LLM (движок SLRMini выше). По умолчанию — собеседник mini2
+    //  slr_net_chat_ru_mini2.npz (train_chat.py: дообучение диалогу). Прежнего собеседника slr_net_chat_ru_mini.npz
+    //  и модели-продолжатели субтитров (slr_net_subtitles_ru_mini*.npz) тоже можно загрузить файлом.
     //  Веса скачиваются один раз (GitHub или файл с телефона) и хранятся в IndexedDB браузера.
     //  Генерация идёт по токену с паузами для браузера — страница не зависает, ответ печатается.
     // =============================================================================================
-    const MINI_FILE_NAME = "slr_net_chat_ru_mini.npz";
+    const MINI_FILE_NAME = "slr_net_chat_ru_mini2.npz";
     const MINI_WEIGHTS_URLS = [
       MINI_FILE_NAME,                                                   // рядом со страницей (сервер, GitHub Pages)
       "https://raw.githubusercontent.com/RamadanIU/Singularity/main/" + MINI_FILE_NAME
@@ -3413,8 +3435,8 @@
       chatMaxNewTokens: 64   // ответы с рассуждением («Рассуждаю: … Значит, …») длиннее 48 токенов
     };
     // Какие веса собеседника ожидает эта страница. Если в памяти браузера лежат другие (старые), в панели mini
-    // появляется кнопка «Обновить»: страница не скачивает 8.9 МБ сама, без спроса (мобильный интернет).
-    const MINI_CHAT_VERSION = { step: 2105, bestVal: 1.3461, title: "логика, «не знаю — объясни», ответ по объяснению" };
+    // появляется кнопка «Обновить»: страница не скачивает 8.1 МБ сама, без спроса (мобильный интернет).
+    const MINI_CHAT_VERSION = { step: 2700, bestVal: 1.1897, title: "mini2: больше внимания, сжатый эмбеддинг, без памяти фактов" };
     function miniChatOutdated(bundle) {
       if (!bundle || !bundle.chat) return false;
       const m = bundle.meta || {};
@@ -3565,7 +3587,7 @@
     async function miniFetchWithProgress(url, onProgress) {
       const resp = await fetch(url);
       if (!resp.ok) throw new Error(`HTTP ${resp.status}`);
-      const total = Number(resp.headers.get("content-length")) || 9.3e6;
+      const total = Number(resp.headers.get("content-length")) || 8.5e6;
       if (!resp.body || typeof resp.body.getReader !== "function") return await resp.arrayBuffer();
       const reader = resp.body.getReader();
       const chunks = [];

@@ -183,3 +183,106 @@ def test_generate_runs_and_respects_length():
     model = E.SLRNetLanguageModel(E.make_config("tiny", vocab_size=30))
     out = model.generate(torch.tensor([[1, 2, 3]]), max_new_tokens=7, temperature=0.9, top_k=10)
     assert out.shape == (1, 10)
+
+
+# ------------------------------------------------------------------ без памяти фактов и сжатый эмбеддинг
+
+@pytest.mark.parametrize("bits", [2, 3, 4, 5, 8])
+@pytest.mark.parametrize("n", [1, 7, 64])
+def test_pack_int_matrix_roundtrip(bits, n):
+    rng = np.random.default_rng(bits * 100 + n)
+    qmax = 2 ** (bits - 1) - 1
+    q = rng.integers(-qmax, qmax + 1, size=(3, n)).astype(np.int8)
+    data = E.pack_int_matrix(q, bits)
+    assert data.dtype == np.uint8
+    assert data.size == (math.ceil(q.size / 2) if bits <= 4 else q.size)   # до 4 бит — два числа в байте
+    assert np.array_equal(E.unpack_int_matrix(data, q.shape, bits), q)
+
+
+def test_group_quantize_is_idempotent_and_ste_passes_gradient():
+    torch.manual_seed(8)
+    w = (torch.randn(11, 32) * 0.05).requires_grad_()
+    q, scale = E.group_quantize(w.detach(), 4, 8)
+    assert q.abs().max() <= 7 and scale.shape == (11, 4)
+    assert torch.equal(scale, scale.half().float())                       # масштаб уже такой, как в файле
+    w2 = (q.reshape(11, 4, 8) * scale[..., None]).reshape(11, 32)
+    q2, scale2 = E.group_quantize(w2, 4, 8)
+    assert torch.equal(q, q2) and torch.equal(scale, scale2)               # после загрузки из файла — те же числа
+    assert (w2 - w.detach()).abs().max() <= scale.max() / 2 + 1e-7
+    fq = E.fake_quant_groups(w, 4, 8)
+    assert torch.allclose(fq.detach(), w2)
+    (fq * torch.arange(32.0)).sum().backward()                             # STE: градиент идёт к мастер-весам как есть
+    assert torch.allclose(w.grad, torch.arange(32.0).expand(11, 32))
+
+
+@pytest.mark.parametrize("router_bias", [5.0, -5.0])
+def test_model_without_memory_with_compressed_embedding_steps_like_parallel(router_bias):
+    torch.manual_seed(9)
+    cfg = E.make_config("tiny", vocab_size=97, window_size=6, ssm_chunk=4, ternary=False,
+                        memory_keys=0, embed_bits=4, embed_group=32)
+    model = E.SLRNetLanguageModel(cfg).double().eval()
+    assert model.core.memory is None and model.num_params()["memory_values"] == 0
+    assert not any("memory" in k for k in model.state_dict())
+    with torch.no_grad():
+        model.core.router.bias.fill_(router_bias)
+    ids = torch.randint(0, cfg.vocab_size, (2, 21))
+    with torch.no_grad():
+        par, _, _ = model(ids, routing="threshold")
+        cache = model.init_cache(2)
+        steps = torch.stack([model.step(ids[:, t], cache) for t in range(ids.shape[1])], 1)
+    assert torch.allclose(par, steps, atol=1e-6), (par - steps).abs().max()
+    # и вход, и выход (связанный с эмбеддингом) считаются по округлённой таблице
+    w = model.embedding_weight()
+    assert len(torch.unique(model.tok_embeddings.weight)) > 1000 and not torch.equal(w, model.tok_embeddings.weight)
+    q, _ = E.group_quantize(w, 4, 32)
+    assert torch.equal(E.group_quantize(model.tok_embeddings.weight, 4, 32)[0], q)
+
+
+def test_compressed_embedding_trains_and_exports_exactly():
+    """Модель с 4-битным эмбеддингом учится (градиент доходит до эмбеддинга), а в файл попадают ровно те
+    числа, с которыми она работала: после загрузки эмбеддинг совпадает бит в бит."""
+    torch.manual_seed(10)
+    cfg = E.make_config("tiny", vocab_size=60, memory_keys=0, embed_bits=4, embed_group=32)
+    model = E.SLRNetLanguageModel(cfg)
+    opt = torch.optim.AdamW(model.parameters(), lr=3e-3)
+    ids = torch.randint(0, 60, (4, 33))
+    losses = []
+    for _ in range(25):
+        _, loss, _ = model(ids[:, :-1], ids[:, 1:])
+        opt.zero_grad()
+        loss.backward()
+        assert float(model.tok_embeddings.weight.grad.abs().sum()) > 0
+        opt.step()
+        losses.append(float(loss.detach()))
+    assert losses[-1] < losses[0] * 0.8
+    model.eval()
+    packed = model.export_packed()
+    assert "tok_embeddings.weight" not in packed and "tok_embeddings.weight.qdata" in packed
+    assert packed["tok_embeddings.weight.qdata"].nbytes == 60 * cfg.d_model // 2          # полбайта на число
+    restored = E.SLRNetLanguageModel.from_packed(cfg, packed).eval()
+    with torch.no_grad():
+        assert torch.equal(restored.embedding_weight(), model.embedding_weight())
+        assert torch.equal(restored.embedding_weight(), restored.tok_embeddings.weight)
+        x = torch.randint(0, 60, (2, 30))
+        l1, l2 = model(x, routing="all")[0], restored(x, routing="all")[0]
+    assert (l1.argmax(-1) == l2.argmax(-1)).float().mean() > 0.9
+
+
+def test_mini2_redistributes_the_file_from_tables_to_computation():
+    """mini2 весит столько же, сколько mini, но почти весь файл — вычисляющие слои, а внимания больше."""
+    old, new = (E.calculate_hardware_footprint(E.make_config(p, vocab_size=8194)) for p in ("mini", "mini2"))
+    cfg = E.make_config("mini2")
+    assert cfg.memory_keys == 0 and cfg.embed_bits == 4
+    assert new["packed_memory_mb"] == 0
+    bits_per_number = new["packed_embedding_mb"] * 1024 ** 2 * 8 / (new["embedding_params_millions"] * 1e6)
+    assert bits_per_number < 4.3                                           # было 16 бит на число
+    assert new["packed_embedding_mb"] < 0.45 * old["packed_embedding_mb"]  # хотя векторы шире (512 вместо 320)
+    assert new["packed_model_mb"] <= old["packed_model_mb"]
+    assert new["packed_ternary_mb"] > 3 * old["packed_ternary_mb"]
+    assert new["packed_ternary_mb"] > 0.6 * new["packed_model_mb"]
+    old_cfg = E.make_config("mini")
+    n_attn = lambda c: (E.layer_kinds(c.n_encoder_layers, c.encoder_attn_every)
+                        + E.layer_kinds(c.n_decoder_layers, c.decoder_attn_every)).count("attn")
+    assert n_attn(cfg) > n_attn(old_cfg)
+    assert cfg.n_kv_heads == cfg.n_heads > old_cfg.n_kv_heads                 # у каждой головы свои ключи
+    assert cfg.window_size >= 2 * old_cfg.window_size

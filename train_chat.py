@@ -38,7 +38,7 @@
   python train_chat.py align  --ckpt runs/chat_sft/best.pt --data data/chat --out runs/chat_align
   python train_chat.py eval   --ckpt slr_net_subtitles_ru_mini.npz runs/chat_align/best.pt --data data/chat
   python train_chat.py export --ckpt runs/chat_align/best.pt --out slr_net_chat_ru_mini.npz
-  python train_chat.py chat   --ckpt slr_net_chat_ru_mini.npz
+  python train_chat.py chat   --ckpt slr_net_chat_ru_mini2.npz
 
 Формат диалога (токены):  <user> текст <n> <bot> ответ <n> <user> ... <bot> ответ <n>
 Ролевые токены лежат ВНЕ словаря SentencePiece (id = 8192 и 8193): их нельзя «набрать» текстом,
@@ -688,6 +688,11 @@ def cmd_sft(args: argparse.Namespace) -> None:
     rng = random.Random(args.seed)
     device = LM.pick_device(args.device)
     model, tok, chat = load_chat_model(args.base, torch.device("cpu"))
+    if args.set:
+        # например, memory_keys=0 embed_bits=4: выбросить память фактов и дальше учиться со сжатым эмбеддингом
+        overrides = LM.config_overrides(args.set)
+        model = E.reconfigure(model, **overrides)
+        print(f"Настройки модели изменены: {overrides}")
     if not chat:
         model = extend_vocab(model, tok.vocab_size, init_from=tok.nl_id, seed=args.seed)
         print(f"Словарь расширен до {tok.vocab_size}: ролевые токены <user>={tok.user_id}, <bot>={tok.bot_id}")
@@ -704,6 +709,7 @@ def cmd_sft(args: argparse.Namespace) -> None:
     args.lr = args.lr or 5e-4
     optimizer = LM.build_optimizer(model, argparse.Namespace(weight_decay=args.weight_decay, lr=args.lr), device)
     train_model = torch.compile(model) if args.compile else model
+    _, autocast_ctx = LM.autocast_for(device, args.dtype)       # bf16 только для умножений; проверка — float32
     out = Path(args.out)
     out.mkdir(parents=True, exist_ok=True)
     with open(out / "config.json", "w", encoding="utf-8") as f:
@@ -713,20 +719,33 @@ def cmd_sft(args: argparse.Namespace) -> None:
     def epoch_rows():
         return pack_rows(expand_by_weight(train, rng), args.seq_len + 1, tok.nl_id, rng, tok.user_id)
 
+    start = 0
+    if args.resume:
+        # Продолжение после остановки (Ctrl+C, перезагрузка машины): веса, оптимизатор, шаг и лучшая ошибка.
+        # Порядок строк после продолжения — новый случайный (зерно сдвигается на номер шага).
+        ck = torch.load(args.resume, map_location="cpu", weights_only=False)
+        model.load_state_dict(ck["model"])
+        optimizer.load_state_dict(ck["optimizer"])
+        start = int(ck["step"])
+        rng = random.Random(args.seed + 1_000_003 * start)
+        print(f"Продолжение с {args.resume}: шаг {start}, лучшая ошибка {ck['best_val']:.4f}", flush=True)
     rows = epoch_rows()
     steps_per_epoch = max(1, len(rows) // args.batch_size)
     total = args.max_steps or int(args.epochs * steps_per_epoch)
     print(f"Строк по {args.seq_len} токенов: {len(rows):,} за эпоху, шагов: {total} "
           f"(≈ {total / steps_per_epoch:.1f} эпох), LR {args.lr:g}")
-    best = masked_val_loss(model, val, args.batch_size, tok.nl_id)
-    print(f"  ВАЛИДАЦИЯ до обучения: {best:.4f}", flush=True)
-    metrics.write(json.dumps({"kind": "val", "step": 0, "loss": best}) + "\n")
-    if chat:                      # продолжение с чат-модели: «лучший» — только если стало лучше, чем было
-        save_chat_ckpt(out / "best.pt", model, None, tok, 0, best)
+    if args.resume:
+        best = float(ck["best_val"])
     else:
-        best = float("inf")
+        best = masked_val_loss(model, val, args.batch_size, tok.nl_id)
+        print(f"  ВАЛИДАЦИЯ до обучения: {best:.4f}", flush=True)
+        metrics.write(json.dumps({"kind": "val", "step": 0, "loss": best}) + "\n")
+        if chat:                  # продолжение с чат-модели: «лучший» — только если стало лучше, чем было
+            save_chat_ckpt(out / "best.pt", model, None, tok, 0, best)
+        else:
+            best = float("inf")
     ptr, t_last, t0 = 0, time.time(), time.time()
-    for step in range(total):
+    for step in range(start, total):
         if ptr + args.batch_size > len(rows):
             rows, ptr = epoch_rows(), 0
         batch = rows[ptr:ptr + args.batch_size]
@@ -736,7 +755,8 @@ def cmd_sft(args: argparse.Namespace) -> None:
             g["lr"] = lr
         x, y = pad_batch(batch, tok.nl_id)
         x, y = x.to(device), y.to(device)
-        _, loss, stats = train_model(x, y)
+        with autocast_ctx:
+            _, loss, stats = train_model(x, y)
         loss.backward()
         gn = torch.nn.utils.clip_grad_norm_(model.parameters(), args.grad_clip)
         optimizer.step()
@@ -744,7 +764,7 @@ def cmd_sft(args: argparse.Namespace) -> None:
         if step % args.log_every == 0:
             dt = time.time() - t_last
             t_last = time.time()
-            tps = args.batch_size * args.seq_len * (args.log_every if step else 1) / max(dt, 1e-9)
+            tps = args.batch_size * args.seq_len * (args.log_every if step > start else 1) / max(dt, 1e-9)
             print(f"шаг {step:5d}/{total} | loss {float(stats['ce_loss']):.4f} | lr {lr:.2e} | |g| {float(gn):.2f} | "
                   f"{tps:,.0f} ток/с", flush=True)
             metrics.write(json.dumps({"kind": "train", "step": step, "loss": float(stats["ce_loss"]), "lr": lr,
@@ -759,6 +779,8 @@ def cmd_sft(args: argparse.Namespace) -> None:
             metrics.flush()
             if improved:
                 save_chat_ckpt(out / "best.pt", model, None, tok, step + 1, best)
+            if step != total - 1:     # с оптимизатором: можно продолжить с --resume
+                save_chat_ckpt(out / "last.pt", model, optimizer, tok, step + 1, best)
             if args.sample_every and ((step + 1) // args.eval_every) % args.sample_every == 0:
                 for q in ("Привет! Как тебя зовут?", "Сколько будет два плюс два?", "Меня зовут Оля. Как меня зовут?"):
                     r = generate_replies(model, tok, prompt_ids(tok, [("user", q)]), n=1, temperature=0)[0]
@@ -1361,6 +1383,8 @@ def main(argv: Optional[List[str]] = None) -> None:
 
     s = sub.add_parser("sft", help="обучение с учителем по репликам бота")
     s.add_argument("--base", default="slr_net_subtitles_ru_mini.npz")
+    s.add_argument("--set", nargs="*", help="изменить настройки модели перед обучением: memory_keys=0 embed_bits=4")
+    s.add_argument("--resume", default=None, help="продолжить с last.pt (сохраняется при каждой проверке)")
     s.add_argument("--data", default="data/chat")
     s.add_argument("--out", default="runs/chat_sft")
     s.add_argument("--seq-len", type=int, default=256)
@@ -1376,6 +1400,8 @@ def main(argv: Optional[List[str]] = None) -> None:
     s.add_argument("--sample-every", type=int, default=1, help="печатать примеры каждые N проверок (0 — нет)")
     s.add_argument("--log-every", type=int, default=20)
     s.add_argument("--compile", action="store_true")
+    s.add_argument("--dtype", default="auto", choices=["auto", "bf16", "fp32"],
+                   help="bf16 на CPU с AMX — в ~2.5 раза быстрее (см. train_lm.py train --dtype)")
     s.add_argument("--device", default="auto")
     s.add_argument("--seed", type=int, default=1234)
 
@@ -1427,7 +1453,7 @@ def main(argv: Optional[List[str]] = None) -> None:
     e.add_argument("--json", default=None)
 
     c = sub.add_parser("chat", help="диалог в консоли")
-    c.add_argument("--ckpt", default="slr_net_chat_ru_mini.npz")
+    c.add_argument("--ckpt", default="slr_net_chat_ru_mini2.npz")
     c.add_argument("--prompt", default=None, help="один вопрос без интерактивного режима")
     c.add_argument("--max-new-tokens", type=int, default=64)
     c.add_argument("--temperature", type=float, default=0.7)

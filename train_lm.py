@@ -300,6 +300,30 @@ def pick_device(name: str):
     return torch.device("cpu")
 
 
+def cpu_has_amx_bf16() -> bool:
+    try:
+        with open("/proc/cpuinfo", encoding="utf-8") as f:
+            return "amx_bf16" in f.read()
+    except OSError:
+        return False
+
+
+def autocast_for(device, dtype: str):
+    """
+    bf16 для матричных умножений: на видеокарте — если она умеет bf16; на процессоре — только по явному
+    --dtype bf16 (на Intel Xeon с AMX это в ~2.5 раза быстрее float32; на процессорах без AMX bf16 медленнее).
+    Мастер-веса, квантование, скан Mamba и ошибка остаются во float32.
+    """
+    import torch
+    if device.type == "cuda":
+        use = torch.cuda.is_bf16_supported() and dtype in ("auto", "bf16")
+    else:
+        use = device.type == "cpu" and dtype == "bf16"
+        if use and not cpu_has_amx_bf16():
+            print("ВНИМАНИЕ: у процессора нет AMX-BF16 — bf16 может оказаться медленнее float32")
+    return use, (torch.autocast(device.type, dtype=torch.bfloat16) if use else nullcontext())
+
+
 def lr_at(step: int, args: argparse.Namespace) -> float:
     """Разогрев + cosine или WSD (warmup-stable-decay: удобно «дообучать дальше» без перезапуска)."""
     base, min_lr = args.lr, args.lr * args.min_lr_ratio
@@ -335,17 +359,24 @@ def build_optimizer(model, args: argparse.Namespace, device):
     return torch.optim.AdamW(groups, **kwargs)
 
 
-def config_from_args(args: argparse.Namespace, vocab_size: int) -> E.SLRNetConfig:
-    overrides: Dict[str, object] = {"vocab_size": vocab_size}
-    if args.no_ternary:
-        overrides["ternary"] = False
+def config_overrides(items: Optional[List[str]]) -> Dict[str, object]:
+    """['d_model=512', 'embed_bits=4'] -> {'d_model': 512, 'embed_bits': 4} с типами из SLRNetConfig."""
     field_types = {f.name: type(f.default) for f in dataclasses.fields(E.SLRNetConfig)}
-    for item in args.set or []:
+    overrides: Dict[str, object] = {}
+    for item in items or []:
         key, _, value = item.partition("=")
         if key not in field_types:
             raise ValueError(f"Неизвестный параметр конфигурации: {key}. Доступны: {sorted(field_types)}")
         kind = field_types[key]
         overrides[key] = value.lower() in ("1", "true", "yes") if kind is bool else kind(value)
+    return overrides
+
+
+def config_from_args(args: argparse.Namespace, vocab_size: int) -> E.SLRNetConfig:
+    overrides: Dict[str, object] = {"vocab_size": vocab_size}
+    if args.no_ternary:
+        overrides["ternary"] = False
+    overrides.update(config_overrides(args.set))
     return E.make_config(args.preset, **overrides)
 
 
@@ -394,11 +425,21 @@ def cmd_train(args: argparse.Namespace) -> None:
         ckpt = torch.load(args.resume, map_location="cpu", weights_only=False)
         cfg = E.SLRNetConfig(**ckpt["config"])
         start_step, best_val = ckpt["step"], ckpt.get("best_val", float("inf"))
+        model = E.SLRNetLanguageModel(cfg).to(device)
+        model.load_state_dict(ckpt["model"])
+    elif args.init:
+        # Дообучение готовой модели; --set может, например, выбросить память фактов (memory_keys=0)
+        # или включить сжатие эмбеддинга (embed_bits=4) — остальные веса переносятся как есть.
+        model, _ = load_model(args.init, torch.device("cpu"))
+        overrides = {k: v for k, v in config_overrides(args.set).items()}
+        model = E.reconfigure(model, **overrides).to(device)
+        cfg = model.config
+        if cfg.vocab_size != meta["vocab_size"]:
+            raise ValueError(f"Словарь модели {cfg.vocab_size} != словарь данных {meta['vocab_size']}")
+        print(f"Начальные веса: {args.init}" + (f", изменено: {overrides}" if overrides else ""))
     else:
         cfg = config_from_args(args, meta["vocab_size"])
-    model = E.SLRNetLanguageModel(cfg).to(device)
-    if ckpt is not None:
-        model.load_state_dict(ckpt["model"])
+        model = E.SLRNetLanguageModel(cfg).to(device)
 
     if args.lr is None:
         # BitNet-модели учатся при бОльшем LR, чем обычные (см. BitNet b1.58 2B4T)
@@ -407,8 +448,7 @@ def cmd_train(args: argparse.Namespace) -> None:
     if ckpt is not None and "optimizer" in ckpt:
         optimizer.load_state_dict(ckpt["optimizer"])
 
-    use_bf16 = device.type == "cuda" and torch.cuda.is_bf16_supported() and args.dtype in ("auto", "bf16")
-    autocast_ctx = torch.autocast("cuda", dtype=torch.bfloat16) if use_bf16 else nullcontext()
+    use_bf16, autocast_ctx = autocast_for(device, args.dtype)
     train_model = torch.compile(model) if args.compile else model
 
     val_start = int(meta["val_start"])
@@ -428,10 +468,15 @@ def cmd_train(args: argparse.Namespace) -> None:
     fp = E.calculate_hardware_footprint(cfg)
     tokens_per_step = args.batch_size * args.seq_len * args.grad_accum
     print("=" * 86)
-    print(f"Модель SLR-Net «{args.preset}»: {n['total'] / 1e6:.1f} млн параметров "
+    name = args.preset if not (args.init or args.resume) else Path(args.init or args.resume).name
+    print(f"Модель SLR-Net «{name}»: {n['total'] / 1e6:.1f} млн параметров "
           f"(троичных {n['ternary'] / 1e6:.1f}, память фактов {n['memory_values'] / 1e6:.1f}) | "
           f"{'троичные веса' if cfg.ternary else 'FP-веса'}")
-    print(f"Упакованный размер ≈ {fp['packed_model_mb']:.1f} МБ | устройство {device} | "
+    print(f"Упакованный размер ≈ {fp['packed_model_mb']:.1f} МБ: вычисляющие троичные слои "
+          f"{fp['packed_ternary_mb']:.1f}, эмбеддинг {fp['packed_embedding_mb']:.1f}"
+          f"{f' ({cfg.embed_bits} бит, сжимается при обучении)' if cfg.embed_bits else ' (float16)'}, "
+          f"память фактов {fp['packed_memory_mb']:.1f}, прочее {fp['packed_other_mb']:.1f}")
+    print(f"Устройство {device} | "
           f"{'bf16' if use_bf16 else 'fp32'} | LR {args.lr:g} | {tokens_per_step:,} токенов/шаг")
     print(f"Данные: {val_start:,} обучающих токенов, {len(tokens) - val_start:,} валидационных; "
           f"{args.max_steps} шагов ≈ {args.max_steps * tokens_per_step / max(1, val_start):.1f} эпох")
@@ -507,7 +552,8 @@ def cmd_train(args: argparse.Namespace) -> None:
 
         last = step == args.max_steps - 1 or stop_requested["flag"]
         if (step > 0 and step % args.eval_every == 0) or (last and not stop_requested["flag"]):
-            ev = evaluate(model, val_sampler, args.eval_batches, autocast_ctx)
+            # валидация всегда во float32: так её цифры сравнимы между запусками с bf16 и без
+            ev = evaluate(model, val_sampler, args.eval_batches, nullcontext())
             bpb = ev["loss"] / math.log(2) / meta["bytes_per_token"]
             improved = ev["loss"] < best_val
             best_val = min(best_val, ev["loss"])
@@ -590,6 +636,9 @@ def cmd_sample(args: argparse.Namespace) -> None:
 def cmd_export(args: argparse.Namespace) -> None:
     import torch
     model, tok = load_model(args.ckpt, torch.device("cpu"))
+    if args.set:
+        # Без дообучения: например, memory_keys=0 embed_bits=4 — выбросить память и округлить готовый эмбеддинг
+        model = E.reconfigure(model, **config_overrides(args.set))
     packed = model.export_packed()
     extra: Dict[str, np.ndarray] = {
         # Токенизатор кладём внутрь: один файл весов = готовая к запуску модель
@@ -656,6 +705,74 @@ def cmd_eval(args: argparse.Namespace) -> None:
                        for n, l, _ in rows], f, ensure_ascii=False, indent=2)
 
 
+def copy_probe(model, tokens: np.ndarray, start: int, end: int, span: int, gap: int, n: int,
+               seed: int, batch: int = 16, control: bool = False) -> Dict[str, float]:
+    """
+    Проверка дословного копирования: кусок настоящего текста (span токенов), затем gap токенов другого
+    текста, затем тот же кусок ещё раз. Во втором повторе каждый токен (кроме первого) можно не угадывать,
+    а переписать из контекста. Считаются доля верно угаданных токенов второго повтора и ошибка на них.
+    Расстояние между повторами = span + gap: если оно больше окна внимания, переписать можно только
+    «по памяти» слоёв Mamba — именно так модель теряет имена и редкие слова, сказанные несколько реплик назад.
+    control=True — те же последовательности, но вместо первого повтора другой текст: так видно, сколько
+    модель угадывает и без копирования (обычным предсказанием следующего слова).
+    """
+    import torch
+    rng = np.random.default_rng(seed)
+    hit = tot = 0
+    loss_sum = 0.0
+    model.eval()
+    with torch.no_grad():
+        for b0 in range(0, n, batch):
+            rows = []
+            for _ in range(min(batch, n - b0)):
+                a = int(rng.integers(start, end - span - 1))
+                g = int(rng.integers(start, end - gap - 1))
+                c = int(rng.integers(start, end - span - 1))
+                piece = np.asarray(tokens[a:a + span], dtype=np.int64)
+                filler = np.asarray(tokens[g:g + gap], dtype=np.int64)
+                first = np.asarray(tokens[c:c + span], dtype=np.int64) if control else piece
+                rows.append(np.concatenate([first, filler, piece]))
+            x = torch.from_numpy(np.stack(rows))
+            logits, _, _ = model(x[:, :-1], routing="threshold")
+            first = span + gap                                   # где начинается второй повтор
+            lp = torch.log_softmax(logits[:, first:].float(), -1)
+            tgt = x[:, first + 1:]
+            loss_sum += float(-lp.gather(-1, tgt[..., None]).sum())
+            hit += int((lp.argmax(-1) == tgt).sum())
+            tot += tgt.numel()
+    return {"acc": hit / max(1, tot), "loss": loss_sum / max(1, tot)}
+
+
+def cmd_copytest(args: argparse.Namespace) -> None:
+    """Сравнение моделей по дословному копированию на отложенной части корпуса (см. copy_probe)."""
+    import torch
+    torch.set_flush_denormal(True)
+    device = pick_device(args.device)
+    meta, tokens, _ = load_dataset(args.data)
+    val_start = int(meta["val_start"])
+    results = []
+    gaps = [int(g) for g in args.gaps]
+    print(f"Кусок текста {args.span} токенов, потом другой текст (gap), потом тот же кусок. "
+          f"{args.n} примеров на каждое расстояние. Доля верно угаданных токенов второго повтора:")
+    print(f"{'Модель':<48}" + "".join(f"{'расст. ' + str(args.span + g):>14}" for g in gaps))
+    for ckpt in args.ckpt:
+        model, _ = load_model(ckpt, device)
+        row = {"model": ckpt, "window": model.config.window_size, "by_distance": {}, "no_repeat": {}}
+        for g in gaps:
+            row["by_distance"][args.span + g] = copy_probe(model, tokens, val_start, len(tokens), args.span, g,
+                                                          args.n, args.seed)
+            row["no_repeat"][args.span + g] = copy_probe(model, tokens, val_start, len(tokens), args.span, g,
+                                                        args.n, args.seed, control=True)
+        results.append(row)
+        print(f"{ckpt[-48:]:<48}" + "".join(f"{100 * v['acc']:13.1f}%" for v in row["by_distance"].values())
+              + f"   (окно внимания {model.config.window_size})", flush=True)
+        print(f"{'  ... без повтора (контроль)':<48}"
+              + "".join(f"{100 * v['acc']:13.1f}%" for v in row["no_repeat"].values()), flush=True)
+    if args.json:
+        with open(args.json, "w", encoding="utf-8") as f:
+            json.dump({"span": args.span, "n": args.n, "results": results}, f, ensure_ascii=False, indent=1)
+
+
 # =============================================================================
 # CLI
 # =============================================================================
@@ -696,9 +813,14 @@ def main(argv: Optional[List[str]] = None) -> None:
     t.add_argument("--log-every", type=int, default=20)
     t.add_argument("--sample-prompt", default="Привет! Как дела?")
     t.add_argument("--device", default="auto")
-    t.add_argument("--dtype", default="auto", choices=["auto", "bf16", "fp32"])
+    t.add_argument("--dtype", default="auto", choices=["auto", "bf16", "fp32"],
+                   help="auto: bf16 на видеокарте; на CPU с AMX (Intel Xeon 4-го поколения и новее) "
+                        "--dtype bf16 ускоряет обучение в ~2.5 раза")
     t.add_argument("--compile", action="store_true", help="torch.compile (быстрее и на GPU, и на CPU: ~1.7x)")
     t.add_argument("--resume", default=None, help="продолжить с чекпоинта")
+    t.add_argument("--init", default=None,
+                   help="начать с весов готовой модели (.pt/.npz); с --set можно убрать память фактов "
+                        "(memory_keys=0) или включить сжатие эмбеддинга (embed_bits=4)")
     t.add_argument("--seed", type=int, default=1337)
 
     s = sub.add_parser("sample", help="генерация текста")
@@ -726,10 +848,21 @@ def main(argv: Optional[List[str]] = None) -> None:
     x = sub.add_parser("export", help="упаковать троичные веса")
     x.add_argument("--ckpt", required=True)
     x.add_argument("--out", required=True)
+    x.add_argument("--set", nargs="*", help="изменить настройки при упаковке (без дообучения): memory_keys=0 embed_bits=4")
+
+    c = sub.add_parser("copytest", help="проверка дословного копирования из контекста на отложенных данных")
+    c.add_argument("--ckpt", nargs="+", required=True, help="чекпоинты .pt и/или упакованные .npz")
+    c.add_argument("--data", required=True)
+    c.add_argument("--span", type=int, default=32, help="длина повторяемого куска (токенов)")
+    c.add_argument("--gaps", nargs="+", default=["0", "64", "160"], help="сколько токенов другого текста между повторами")
+    c.add_argument("--n", type=int, default=256, help="примеров на каждое расстояние")
+    c.add_argument("--json", default=None)
+    c.add_argument("--device", default="auto")
+    c.add_argument("--seed", type=int, default=777)
 
     args = ap.parse_args(argv)
     {"prepare": cmd_prepare, "train": cmd_train, "sample": cmd_sample, "eval": cmd_eval,
-     "export": cmd_export}[args.cmd](args)
+     "export": cmd_export, "copytest": cmd_copytest}[args.cmd](args)
 
 
 if __name__ == "__main__":
