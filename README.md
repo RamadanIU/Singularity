@@ -127,16 +127,24 @@ python train_lm.py eval --ckpt runs/small/best.pt --data data
 # 5) упаковка троичных весов (токенизатор кладётся внутрь) и отчёт о размере
 python train_lm.py export --ckpt runs/small/best.pt --out runs/small/model_packed.npz
 python train_lm.py sample --ckpt runs/small/model_packed.npz --prompt "Почему небо синее?"
+# 6) умеет ли модель дословно переписывать текст из контекста (имена, редкие слова)
+python train_lm.py copytest --ckpt runs/small/model_packed.npz --data data
 ```
 Полезные флаги: `--no-ternary` (обычные веса — для сравнения качества), `--schedule wsd`,
-`--compile` (быстрее и на GPU, и на CPU — ~1.7×), `--resume runs/small/last.pt` (продолжить после
-остановки; Ctrl+C сохраняет `last.pt`), `--set d_model=512 max_latent_steps=3`.
-Каждая точка обучения пишется в `runs/.../metrics.jsonl`.
+`--compile` (быстрее и на GPU, и на CPU — ~1.7×), `--dtype bf16` (на процессорах Intel Xeon с AMX
+обучение ещё в ~2.5 раза быстрее), `--resume runs/small/last.pt` (продолжить после остановки; Ctrl+C
+сохраняет `last.pt`), `--set d_model=512 max_latent_steps=3`, `--init готовая_модель.npz --set
+memory_keys=0 embed_bits=4` (дообучать готовую модель без памяти фактов и со сжатым эмбеддингом).
+`export --set memory_keys=0 embed_bits=4` сжимает готовую модель без дообучения (в ~3 раза меньше, но
+чуть хуже — см. [TRAINING_MINI2_RU.md](TRAINING_MINI2_RU.md)). Каждая точка обучения пишется в
+`runs/.../metrics.jsonl`.
 
-**Без GPU.** Берите пресет `mini` и `--seq-len 256 --batch-size 16 --compile`: на 4 ядрах это
-~2000 токенов/с (~37 млн токенов за 5 часов). На Linux ещё немного ускоряет
-`LD_PRELOAD=/usr/lib/x86_64-linux-gnu/libjemalloc.so.2` (`apt install libjemalloc2`). Готовый рецепт —
-в [TRAINING_RU_SUBTITLES.md](TRAINING_RU_SUBTITLES.md).
+**Без GPU.** Берите пресет `mini2` (или `mini` — в 2 раза быстрее, но слабее) и `--seq-len 256
+--batch-size 16 --compile`, а на процессоре с AMX (`grep amx_bf16 /proc/cpuinfo`) ещё и `--dtype bf16`:
+на 4 ядрах `mini2` учится ~2300 токенов/с (~37 млн токенов за 4.5 часа), `mini` — ~4400 токенов/с. Без
+AMX bf16 не нужен: `mini` в float32 — ~2000–2900 токенов/с. На Linux ещё немного ускоряет
+`LD_PRELOAD=/usr/lib/x86_64-linux-gnu/libjemalloc.so.2` (`apt install libjemalloc2`). Готовые рецепты —
+в [TRAINING_RU_SUBTITLES.md](TRAINING_RU_SUBTITLES.md) и [TRAINING_MINI2_RU.md](TRAINING_MINI2_RU.md).
 
 ### 6. Пост-тренинг: из продолжателя текста — в собеседника
 ```bash
@@ -154,13 +162,17 @@ python train_chat.py export --ckpt runs/chat_sft/best.pt --out slr_net_chat_ru_m
 | Пресет | Параметров | из них троичных | эмбеддинг | память фактов | упакованный размер |
 |---|---|---|---|---|---|
 | `tiny` | 1.7 млн | 1.0 млн | 0.5 млн | 0.1 млн | ≈ 1.5 МБ |
-| `mini` | 12.3 млн | 8.3 млн | 2.6 млн | 1.3 млн | ≈ 9.2 МБ |
+| `mini` | 12.3 млн | 8.3 млн | 2.6 млн | 1.3 млн | ≈ 9.2 МБ (из них вычисляющие слои — 1.6 МБ) |
+| `mini2` | 36.1 млн | 31.7 млн | 4.2 млн (4 бита) | — | ≈ 8.5 МБ (из них вычисляющие слои — 6.0 МБ) |
 | `small` | 26.5 млн | 13.8 млн | 6.3 млн | 6.3 млн | ≈ 27 МБ |
 | `base` | 128.7 млн | 65.4 млн | 12.6 млн | 50.3 млн | ≈ 133 МБ |
 | `large` | 205.9 млн | 121.4 млн | 16.8 млн | 67.1 млн | ≈ 184 МБ |
 
-Цифры считает `calculate_hardware_footprint()`; тесты сверяют формулу с реальной моделью PyTorch.
-Память на генерацию (кэш) не растёт с длиной диалога: 0.2–13 МБ в зависимости от пресета.
+Цифры считает `calculate_hardware_footprint()` (и по частям: вычисляющие слои, эмбеддинг, память фактов);
+тесты сверяют формулу с реальной моделью PyTorch. `mini2` — это `mini` с перераспределённым файлом: память
+фактов убрана, эмбеддинг сжимается до 4 бит во время обучения, а освободившиеся ~6 МБ отданы вычислениям, в
+первую очередь вниманию ([TRAINING_MINI2_RU.md](TRAINING_MINI2_RU.md)). Память на генерацию (кэш) не растёт
+с длиной диалога: 0.2–13 МБ в зависимости от пресета.
 
 ## Тесты
 ```bash

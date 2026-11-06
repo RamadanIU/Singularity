@@ -135,22 +135,24 @@ def test_tokenizer_proto_roundtrip(tmp_path):
     assert a.encode(s) == b.encode(s) and b.decode(b.encode(s)) == s
 
 
-SHIPPED = Path(ROOT) / "slr_net_subtitles_ru_mini.npz"
+SHIPPED_MODELS = [Path(ROOT) / "slr_net_subtitles_ru_mini.npz", Path(ROOT) / "slr_net_subtitles_ru_mini2.npz"]
 DIALOGUE = ("- Привет! Как дела?\n- Хорошо, спасибо. А у тебя?\n- Тоже неплохо. Куда ты идёшь?\n"
             "- Домой, уже поздно.\n- Давай я тебя провожу.\n- Не надо, я сама дойду.\n")
 
 
-@pytest.mark.skipif(not SHIPPED.exists(), reason="нет файла обученных весов")
-def test_shipped_subtitles_model_really_learned():
+@pytest.mark.parametrize("shipped", SHIPPED_MODELS, ids=["mini", "mini2"])
+def test_shipped_subtitles_model_really_learned(shipped):
     """Веса из репозитория обучены: обычный диалог предсказывают намного лучше случайных весов
     и того же набора слов в случайном порядке (то есть выучили не только частоты, но и порядок слов)."""
+    if not shipped.exists():
+        pytest.skip("нет файла обученных весов")
     torch = pytest.importorskip("torch")
     pytest.importorskip("sentencepiece")
     import random
     import torch.nn.functional as F
     import slr_net_engine as E
 
-    model, tok = train_lm.load_model(str(SHIPPED), torch.device("cpu"))
+    model, tok = train_lm.load_model(str(shipped), torch.device("cpu"))
 
     def loss(m, text):
         ids = torch.tensor([tok.encode(text)])

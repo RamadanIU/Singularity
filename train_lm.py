@@ -706,13 +706,15 @@ def cmd_eval(args: argparse.Namespace) -> None:
 
 
 def copy_probe(model, tokens: np.ndarray, start: int, end: int, span: int, gap: int, n: int,
-               seed: int, batch: int = 16) -> Dict[str, float]:
+               seed: int, batch: int = 16, control: bool = False) -> Dict[str, float]:
     """
     Проверка дословного копирования: кусок настоящего текста (span токенов), затем gap токенов другого
     текста, затем тот же кусок ещё раз. Во втором повторе каждый токен (кроме первого) можно не угадывать,
     а переписать из контекста. Считаются доля верно угаданных токенов второго повтора и ошибка на них.
     Расстояние между повторами = span + gap: если оно больше окна внимания, переписать можно только
     «по памяти» слоёв Mamba — именно так модель теряет имена и редкие слова, сказанные несколько реплик назад.
+    control=True — те же последовательности, но вместо первого повтора другой текст: так видно, сколько
+    модель угадывает и без копирования (обычным предсказанием следующего слова).
     """
     import torch
     rng = np.random.default_rng(seed)
@@ -725,9 +727,11 @@ def copy_probe(model, tokens: np.ndarray, start: int, end: int, span: int, gap: 
             for _ in range(min(batch, n - b0)):
                 a = int(rng.integers(start, end - span - 1))
                 g = int(rng.integers(start, end - gap - 1))
+                c = int(rng.integers(start, end - span - 1))
                 piece = np.asarray(tokens[a:a + span], dtype=np.int64)
                 filler = np.asarray(tokens[g:g + gap], dtype=np.int64)
-                rows.append(np.concatenate([piece, filler, piece]))
+                first = np.asarray(tokens[c:c + span], dtype=np.int64) if control else piece
+                rows.append(np.concatenate([first, filler, piece]))
             x = torch.from_numpy(np.stack(rows))
             logits, _, _ = model(x[:, :-1], routing="threshold")
             first = span + gap                                   # где начинается второй повтор
@@ -753,13 +757,17 @@ def cmd_copytest(args: argparse.Namespace) -> None:
     print(f"{'Модель':<48}" + "".join(f"{'расст. ' + str(args.span + g):>14}" for g in gaps))
     for ckpt in args.ckpt:
         model, _ = load_model(ckpt, device)
-        row = {"model": ckpt, "window": model.config.window_size, "by_distance": {}}
+        row = {"model": ckpt, "window": model.config.window_size, "by_distance": {}, "no_repeat": {}}
         for g in gaps:
             row["by_distance"][args.span + g] = copy_probe(model, tokens, val_start, len(tokens), args.span, g,
                                                           args.n, args.seed)
+            row["no_repeat"][args.span + g] = copy_probe(model, tokens, val_start, len(tokens), args.span, g,
+                                                        args.n, args.seed, control=True)
         results.append(row)
         print(f"{ckpt[-48:]:<48}" + "".join(f"{100 * v['acc']:13.1f}%" for v in row["by_distance"].values())
               + f"   (окно внимания {model.config.window_size})", flush=True)
+        print(f"{'  ... без повтора (контроль)':<48}"
+              + "".join(f"{100 * v['acc']:13.1f}%" for v in row["no_repeat"].values()), flush=True)
     if args.json:
         with open(args.json, "w", encoding="utf-8") as f:
             json.dump({"span": args.span, "n": args.n, "results": results}, f, ensure_ascii=False, indent=1)

@@ -719,20 +719,33 @@ def cmd_sft(args: argparse.Namespace) -> None:
     def epoch_rows():
         return pack_rows(expand_by_weight(train, rng), args.seq_len + 1, tok.nl_id, rng, tok.user_id)
 
+    start = 0
+    if args.resume:
+        # Продолжение после остановки (Ctrl+C, перезагрузка машины): веса, оптимизатор, шаг и лучшая ошибка.
+        # Порядок строк после продолжения — новый случайный (зерно сдвигается на номер шага).
+        ck = torch.load(args.resume, map_location="cpu", weights_only=False)
+        model.load_state_dict(ck["model"])
+        optimizer.load_state_dict(ck["optimizer"])
+        start = int(ck["step"])
+        rng = random.Random(args.seed + 1_000_003 * start)
+        print(f"Продолжение с {args.resume}: шаг {start}, лучшая ошибка {ck['best_val']:.4f}", flush=True)
     rows = epoch_rows()
     steps_per_epoch = max(1, len(rows) // args.batch_size)
     total = args.max_steps or int(args.epochs * steps_per_epoch)
     print(f"Строк по {args.seq_len} токенов: {len(rows):,} за эпоху, шагов: {total} "
           f"(≈ {total / steps_per_epoch:.1f} эпох), LR {args.lr:g}")
-    best = masked_val_loss(model, val, args.batch_size, tok.nl_id)
-    print(f"  ВАЛИДАЦИЯ до обучения: {best:.4f}", flush=True)
-    metrics.write(json.dumps({"kind": "val", "step": 0, "loss": best}) + "\n")
-    if chat:                      # продолжение с чат-модели: «лучший» — только если стало лучше, чем было
-        save_chat_ckpt(out / "best.pt", model, None, tok, 0, best)
+    if args.resume:
+        best = float(ck["best_val"])
     else:
-        best = float("inf")
+        best = masked_val_loss(model, val, args.batch_size, tok.nl_id)
+        print(f"  ВАЛИДАЦИЯ до обучения: {best:.4f}", flush=True)
+        metrics.write(json.dumps({"kind": "val", "step": 0, "loss": best}) + "\n")
+        if chat:                  # продолжение с чат-модели: «лучший» — только если стало лучше, чем было
+            save_chat_ckpt(out / "best.pt", model, None, tok, 0, best)
+        else:
+            best = float("inf")
     ptr, t_last, t0 = 0, time.time(), time.time()
-    for step in range(total):
+    for step in range(start, total):
         if ptr + args.batch_size > len(rows):
             rows, ptr = epoch_rows(), 0
         batch = rows[ptr:ptr + args.batch_size]
@@ -751,7 +764,7 @@ def cmd_sft(args: argparse.Namespace) -> None:
         if step % args.log_every == 0:
             dt = time.time() - t_last
             t_last = time.time()
-            tps = args.batch_size * args.seq_len * (args.log_every if step else 1) / max(dt, 1e-9)
+            tps = args.batch_size * args.seq_len * (args.log_every if step > start else 1) / max(dt, 1e-9)
             print(f"шаг {step:5d}/{total} | loss {float(stats['ce_loss']):.4f} | lr {lr:.2e} | |g| {float(gn):.2f} | "
                   f"{tps:,.0f} ток/с", flush=True)
             metrics.write(json.dumps({"kind": "train", "step": step, "loss": float(stats["ce_loss"]), "lr": lr,
@@ -766,6 +779,8 @@ def cmd_sft(args: argparse.Namespace) -> None:
             metrics.flush()
             if improved:
                 save_chat_ckpt(out / "best.pt", model, None, tok, step + 1, best)
+            if step != total - 1:     # с оптимизатором: можно продолжить с --resume
+                save_chat_ckpt(out / "last.pt", model, optimizer, tok, step + 1, best)
             if args.sample_every and ((step + 1) // args.eval_every) % args.sample_every == 0:
                 for q in ("Привет! Как тебя зовут?", "Сколько будет два плюс два?", "Меня зовут Оля. Как меня зовут?"):
                     r = generate_replies(model, tok, prompt_ids(tok, [("user", q)]), n=1, temperature=0)[0]
@@ -1369,6 +1384,7 @@ def main(argv: Optional[List[str]] = None) -> None:
     s = sub.add_parser("sft", help="обучение с учителем по репликам бота")
     s.add_argument("--base", default="slr_net_subtitles_ru_mini.npz")
     s.add_argument("--set", nargs="*", help="изменить настройки модели перед обучением: memory_keys=0 embed_bits=4")
+    s.add_argument("--resume", default=None, help="продолжить с last.pt (сохраняется при каждой проверке)")
     s.add_argument("--data", default="data/chat")
     s.add_argument("--out", default="runs/chat_sft")
     s.add_argument("--seq-len", type=int, default=256)

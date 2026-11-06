@@ -295,10 +295,17 @@ def test_tiny_pipeline_sft_align_export_chat(tmp_path, tiny_base, tok, capsys):
     assert "chat.npz" in rep and "ВСЕГО" in rep["chat.npz"]["probes"]
 
 
-@pytest.mark.skipif(not os.path.exists(CHAT_NPZ), reason="нет обученной чат-модели")
-def test_shipped_chat_model_really_answers(tok):
+SHIPPED_CHATS = [(CHAT_NPZ, BASE_NPZ),                                        # mini
+                 (os.path.join(ROOT, "slr_net_chat_ru_mini2.npz"),
+                  os.path.join(ROOT, "slr_net_subtitles_ru_mini2.npz"))]      # mini2 (по умолчанию в браузере)
+
+
+@pytest.mark.parametrize("chat_npz,base_npz", SHIPPED_CHATS, ids=["mini", "mini2"])
+def test_shipped_chat_model_really_answers(tok, chat_npz, base_npz):
     """Готовая чат-модель из репозитория отвечает по смыслу на вопросы, которых не было в обучении."""
-    model, ctok, chat = T.load_chat_model(CHAT_NPZ, torch.device("cpu"))
+    if not (os.path.exists(chat_npz) and os.path.exists(base_npz)):
+        pytest.skip("нет обученной чат-модели")
+    model, ctok, chat = T.load_chat_model(chat_npz, torch.device("cpu"))
     assert chat
     probes = [                                     # 10 вопросов разной трудности, заданы заранее
         ([("user", "Меня зовут Тимофей."), ("bot", "Приятно познакомиться, Тимофей!"), ("user", "Как меня зовут?")],
@@ -321,6 +328,6 @@ def test_shipped_chat_model_really_answers(tok):
         ok += bool(T.check_reply(reply, {"any": keys}))
     assert ok >= MIN_SHIPPED_OK, ok
     # базовая модель (до пост-тренинга) с теми же вопросами справляется хуже
-    base, btok, _ = T.load_chat_model(BASE_NPZ, torch.device("cpu"))
+    base, btok, _ = T.load_chat_model(base_npz, torch.device("cpu"))
     base_ok = sum(bool(T.check_reply(T.answer(base, btok, False, t), {"any": k})) for t, k in probes)
     assert base_ok <= 2 and ok >= base_ok + 5, (ok, base_ok)
