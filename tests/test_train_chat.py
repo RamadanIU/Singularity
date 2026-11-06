@@ -345,3 +345,20 @@ def test_shipped_chat_model_really_answers(tok, chat_npz, base_npz, base_max):
     base, btok, _ = T.load_chat_model(base_npz, torch.device("cpu"))
     base_ok = sum(bool(T.check_reply(T.answer(base, btok, False, t), {"any": k})) for t, k in probes)
     assert base_ok <= base_max and ok >= base_ok + 4, (ok, base_ok)
+
+
+def test_weights_xray_reads_compressed_embedding_and_model_without_memory():
+    """«Рентген» понимает новый формат: 4-битный эмбеддинг читается как обычная матрица (те же числа, что
+    у загруженной модели), памяти фактов нет — её выключение и опрос просто пропускаются."""
+    path = os.path.join(ROOT, "slr_net_subtitles_ru_mini2.npz")
+    if not os.path.exists(path):
+        pytest.skip("нет весов mini2")
+    import weights_xray as X
+    import train_lm as LM
+    table = X.tensor_table(path)
+    model, _ = LM.load_model(path, torch.device("cpu"))
+    assert np.array_equal(table["tok_embeddings.weight"], model.tok_embeddings.weight.detach().numpy())
+    assert not any("memory" in k or k.startswith("tok_embeddings.weight.") for k in table)
+    assert model.core.memory is None and X.memory_usage(model, [], 0) == {}
+    off = X.memory_off(model)
+    assert off.core.memory is None

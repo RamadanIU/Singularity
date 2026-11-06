@@ -13,7 +13,7 @@
              Так видно, какая часть модели реально работает, а какая только занимает место.
   3) probes — точность на задачах с проверкой (то же, что train_chat.py eval, но на случайной выборке, быстрее).
 
-  python weights_xray.py --ckpt мои_веса.npz --ref slr_net_chat_ru_mini.npz            # всё сразу
+  python weights_xray.py --ckpt мои_веса.npz --ref slr_net_chat_ru_mini2.npz           # всё сразу
   python weights_xray.py --ckpt мои_веса.npz --no-ablate --probes 0                     # только diff
 
 Ошибка считается на отложенных диалогах, которые собирает chat_corpus.py (секунды, без субтитров).
@@ -177,7 +177,7 @@ def probe_accuracy(model, tok, probes) -> float:
 def main(argv: Optional[List[str]] = None) -> None:
     ap = argparse.ArgumentParser(description="Рентген весов SLR-Net: что изменилось и что реально работает")
     ap.add_argument("--ckpt", required=True, help="проверяемые веса (.npz или .pt)")
-    ap.add_argument("--ref", default="slr_net_chat_ru_mini.npz", help="с чем сравнивать")
+    ap.add_argument("--ref", default="slr_net_chat_ru_mini2.npz", help="с чем сравнивать (собеседник из репозитория)")
     ap.add_argument("--no-ablate", action="store_true", help="не выключать части модели")
     ap.add_argument("--probes", type=int, default=200, help="сколько задач с проверкой (0 — не проверять)")
     ap.add_argument("--json", default=None, help="сохранить результаты в JSON")
