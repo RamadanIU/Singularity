@@ -276,7 +276,8 @@ def test_cancel_button_stops_long_training(fresh_page):
 # ------------------------------------------------------------------ режим mini: обученная LLM в браузере
 ROOT = os.path.dirname(HTML)
 MINI_NPZ = os.path.join(ROOT, "slr_net_subtitles_ru_mini.npz")
-CHAT_NPZ = os.path.join(ROOT, "slr_net_chat_ru_mini.npz")
+CHAT_NPZ = os.path.join(ROOT, "slr_net_chat_ru_mini2.npz")          # собеседник по умолчанию (mini2)
+OLD_CHAT_NPZ = os.path.join(ROOT, "slr_net_chat_ru_mini.npz")       # прежний собеседник (mini)
 MINI_DIALOGUE = ("- Привет! Как дела?\n- Хорошо, спасибо. А у тебя?\n- Тоже неплохо. Куда ты идёшь?\n"
                  "- Домой, уже поздно.\nДоктор, что с ним?\n- С ним всё будет хорошо.\n")
 MINI_STRINGS = ["Привет! Как дела?", "  много   пробелов  ", "Ёлка и ёж", "№ 5… «цитата» — тире", "Hello, world 1999!",
@@ -408,7 +409,7 @@ def test_mini_weights_are_cached_and_mode_is_remembered(browser):
 def test_mini_download_button_fetches_weights_from_server(browser):
     """Страница, открытая с сервера (например, GitHub Pages), скачивает веса собеседника, лежащие рядом с ней."""
     if not os.path.exists(CHAT_NPZ):
-        pytest.skip("нет файла весов slr_net_chat_ru_mini.npz")
+        pytest.skip("нет файла весов slr_net_chat_ru_mini2.npz")
     import functools
     import http.server
     import threading
@@ -446,7 +447,7 @@ def test_mini_download_button_fetches_weights_from_server(browser):
 @pytest.fixture(scope="module")
 def chat_page(browser):
     if not os.path.exists(CHAT_NPZ):
-        pytest.skip("нет файла весов slr_net_chat_ru_mini.npz")
+        pytest.skip("нет файла весов slr_net_chat_ru_mini2.npz")
     pg = _open_page(browser)
     pg.click("#modeMiniBtn")
     pg.set_input_files("#miniFileInput", CHAT_NPZ)
@@ -505,19 +506,15 @@ def test_current_chat_weights_need_no_update_and_long_replies_fit(chat_page):
     assert chat_page.evaluate("() => MINI_LIMITS.chatMaxNewTokens") >= 64
 
 
-def test_old_chat_weights_offer_update(browser, tmp_path):
-    """Если в браузере сохранены старые веса собеседника, страница предлагает их обновить."""
-    if not os.path.exists(CHAT_NPZ):
+def test_old_chat_weights_offer_update(browser):
+    """Прежний собеседник (mini, с памятью фактов и эмбеддингом float16) по-прежнему работает в браузере,
+    но страница предлагает обновить его до mini2."""
+    if not os.path.exists(OLD_CHAT_NPZ):
         pytest.skip("нет файла весов slr_net_chat_ru_mini.npz")
-    old = tmp_path / "old_chat.npz"
-    with np.load(CHAT_NPZ) as z:
-        arrays = {k: z[k] for k in z.files}
-    arrays["meta.step"] = np.array([1200], dtype=np.int64)                # как у прежней версии собеседника
-    np.savez(old, **arrays)
     pg = _open_page(browser)
     try:
         pg.click("#modeMiniBtn")
-        pg.set_input_files("#miniFileInput", str(old))
+        pg.set_input_files("#miniFileInput", OLD_CHAT_NPZ)
         pg.wait_for_function("() => miniState.bundle !== null && !miniState.loading", timeout=60000)
         assert pg.evaluate("() => miniChatOutdated(miniState.bundle)") is True
         assert pg.evaluate("() => !document.getElementById('miniUpdateBox').classList.contains('hidden')")
