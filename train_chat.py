@@ -198,6 +198,8 @@ def sequence_logprobs(model, x, y, routing: str = "threshold"):
     """Сумма log p по токенам, где y != -100, и их число: (B,), (B,). С градиентом, если он включён."""
     import torch
     import torch.nn.functional as F
+    dev = model.tok_embeddings.weight.device              # обучение и проверка на видеокарте (Colab T4)
+    x, y = x.to(dev), y.to(dev)
     logits, _, _ = model(x, routing=routing)
     logp = F.log_softmax(logits.float(), dim=-1)
     valid = y != -100
@@ -219,8 +221,8 @@ def score_sequences(model, seqs: Sequence[Tuple[List[int], List[int]]], pad_id: 
             idx = order[bi:bi + batch_size]
             x, y = pad_batch([seqs[i] for i in idx], pad_id)
             s, n = sequence_logprobs(model, x, y)
-            out[idx, 0] = s.numpy()
-            out[idx, 1] = n.numpy()
+            out[idx, 0] = s.cpu().numpy()
+            out[idx, 1] = n.cpu().numpy()
             if progress and (bi // batch_size) % 200 == 0:
                 print(f"  оценено {bi + len(idx):,}/{len(seqs):,} ({time.time() - t0:.0f} c)", flush=True)
     model.train(was_training)
@@ -385,7 +387,10 @@ def generate_batch(model, tok: ChatTokenizer, ctxs: Sequence[List[int]], n: int 
                 nxt = lg.argmax(dim=-1)
             else:
                 probs = torch.softmax(_filter_logits(lg, temperature, top_k, top_p), dim=-1)
-                nxt = torch.multinomial(probs, 1, generator=generator).squeeze(-1)
+                if generator is not None and generator.device != probs.device:   # генератор на CPU, модель на видеокарте
+                    nxt = torch.multinomial(probs.cpu(), 1, generator=generator).squeeze(-1).to(probs.device)
+                else:
+                    nxt = torch.multinomial(probs, 1, generator=generator).squeeze(-1)
             nxt = torch.where(done, torch.full_like(nxt, stop_id), nxt)
             for i in torch.nonzero(~done).flatten().tolist():
                 out[i].append(int(nxt[i]))
@@ -1243,8 +1248,9 @@ def cmd_eval(args: argparse.Namespace) -> None:
     open_set = read_jsonl(data / "open_eval.jsonl")[:args.open_items]
     report = {}
     showcase = {}
+    device = LM.pick_device(args.device)
     for path in args.ckpt:
-        model, tok, chat = load_chat_model(path, torch.device("cpu"))
+        model, tok, chat = load_chat_model(path, device)
         name = Path(path).name
         t0 = time.time()
         per_cat: Dict[str, List[int]] = {}
@@ -1333,7 +1339,7 @@ def cmd_live(args: argparse.Namespace) -> None:
     script = json.loads(Path(args.script).read_text(encoding="utf-8")) if args.script else C.LIVE_DIALOGUES
     out = {}
     for path in args.ckpt:
-        model, tok, chat = load_chat_model(path, torch.device("cpu"))
+        model, tok, chat = load_chat_model(path, LM.pick_device(args.device))
         name = Path(path).name
         print(f"\n=== {name}")
         dialogs = []
@@ -1559,6 +1565,7 @@ def main(argv: Optional[List[str]] = None) -> None:
     e.add_argument("--showcase", type=int, default=0, help="сколько примеров диалога (0 — все)")
     e.add_argument("--print-showcase", type=int, default=12)
     e.add_argument("--json", default=None)
+    e.add_argument("--device", default="cpu", help="cpu, cuda или auto")
 
     lv = sub.add_parser("live", help="живые диалоги по сценарию: модель видит свои прошлые ответы")
     lv.add_argument("--ckpt", nargs="+", required=True)
@@ -1567,6 +1574,7 @@ def main(argv: Optional[List[str]] = None) -> None:
     lv.add_argument("--copy", type=float, default=0.0)
     lv.add_argument("--copy-start", type=float, default=0.0)
     lv.add_argument("--json", default=None)
+    lv.add_argument("--device", default="cpu", help="cpu, cuda или auto")
 
     c = sub.add_parser("chat", help="диалог в консоли")
     c.add_argument("--ckpt", default="slr_net_chat_ru_mini2.npz")

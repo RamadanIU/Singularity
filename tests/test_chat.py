@@ -250,15 +250,18 @@ def test_context_skills_held_out_from_training():
     text = json.dumps(data["sft_train"], ensure_ascii=False).lower()
     ctx_text = json.dumps(ctx, ensure_ascii=False).lower()
     held = [t for cat in C.WORK_TITLES.values() for t in cat[1]] + C.WORK_TITLES_LONG_TEST
-    held += [p[0] for p in C.PLOTS_TEST + C.GAMEPLAY_TEST + C.SONG_PLOTS_TEST + C.FEATURES_TEST]
+    held += [d[0] for d in C.PLOT_DO_TEST] + [d[2] for d in C.PLOT_DO_TEST]          # составные сюжеты: что делает
+    held += [n for n, g in C.TITLE_NOUNS_TEST] + [n for n, g, k in C.FEAT_NOUNS_TEST]
+    held += [a for f in C.TITLE_ADJ_TEST + C.FEAT_ADJ_TEST for a in f]
     held += [f[1] for f in C.FAMOUS_WORKS_TEST] + [f[0] for f in C.FOODS_CTX_TEST]
     held += [f[0] for f in C.FILLINGS_SWEET_TEST + C.FILLINGS_SAVORY_TEST] + C.VILLAGES_TEST
     held += [c[5] for c in C.CITIES_CTX_TEST] + [c[6] for c in C.CITIES_CTX_TEST]       # факты о городах
     held += [r[0] for v in C.YOU_TOO_TEST.values() for x in v for r in x[4]]
-    for h in held:
-        assert h.lower() not in text, h                                     # нигде в обучении
+    for h in held:                                                          # нигде в обучении (целым словом)
+        assert not re.search(r"(?<!\w)" + re.escape(h.lower()) + r"(?!\w)", text), h
     # имена героев, клички, способы склейки вопросов и отложенные города — нигде в новых диалогах
     for h in (C.HERO_NAMES_M_TEST + C.HERO_NAMES_F_TEST + C.HERO_NAMES_LONG_TEST + C.PET_NAMES_TEST +
+              [w[0] for w in C.PLOT_WHO_TEST] +
               [c[0] for c in C.CITIES_CTX_TEST] + ["кроме того,", "во-первых,", "ещё вопрос:"] +
               [x.strip().lower() for x in C.MQ_LEADS_TEST]):
         assert not re.search(r"(?<!\w)" + re.escape(h.lower()) + r"(?!\w)", ctx_text), h
@@ -273,7 +276,10 @@ def test_context_skills_held_out_from_training():
     # обучающие и отложенные списки не пересекаются
     for tr, te in C.WORK_TITLES.values():
         assert not set(tr) & set(te)
-    assert not {p[0] for p in C.PLOTS_TRAIN} & {p[0] for p in C.PLOTS_TEST}
+    assert not {d[0] for d in C.PLOT_DO_TRAIN} & {d[0] for d in C.PLOT_DO_TEST}
+    assert not {w[0] for w in C.PLOT_WHO_TRAIN} & {w[0] for w in C.PLOT_WHO_TEST}
+    assert not set(C.TITLE_ADJ_TRAIN) & set(C.TITLE_ADJ_TEST) and not set(C.TITLE_NOUNS_TRAIN) & set(C.TITLE_NOUNS_TEST)
+    assert not {n for n, g, k in C.FEAT_NOUNS_TRAIN} & {n for n, g, k in C.FEAT_NOUNS_TEST}
     assert not set(C.HERO_NAMES_M_TEST + C.HERO_NAMES_F_TEST) & set(C.NAMES_TRAIN)
     assert set(C.HERO_NAMES_M_TEST + C.HERO_NAMES_F_TEST) <= set(C.NAMES_TEST)
     assert not {f[1] for f in C.FAMOUS_WORKS_TRAIN} & {f[1] for f in C.FAMOUS_WORKS_TEST}
@@ -302,6 +308,8 @@ def test_context_dialogues_fit_mini2_window():
         tok = TC.ChatTokenizer(model_proto=z["tokenizer_proto"].tobytes())
     for train in (True, False):
         for name, r in _context_rows(train, n=120, seed=1):
+            if sum(len(t[1]) + 3 for t in r["turns"]) > C.MAX_DIALOGUE_CHARS:
+                continue                                   # такие сборка отбрасывает (build_context_skills)
             ids, _ = TC.encode_dialogue(tok, r["turns"])
             assert len(ids) <= 257, (len(ids), r)
             assert len(tok.encode_line(r["turns"][-1][1])) < 64, r

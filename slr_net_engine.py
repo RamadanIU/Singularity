@@ -1084,6 +1084,17 @@ if TORCH_AVAILABLE:
                     nn.init.normal_(p, std=config.init_std / math.sqrt(2 * n_res))
             self._emb_cache: Optional[Tuple[Tuple[int, int, torch.dtype], torch.Tensor]] = None
 
+        def train(self, mode: bool = True):
+            """Переход в обучение сбрасывает кэши инференса (квантованные веса и эмбеддинг). Кэш узнаёт об
+            изменении весов по счётчику версий тензора, но fused AdamW на видеокарте его НЕ увеличивает:
+            без сброса проверка и генерация между шагами обучения шли бы на весах шага 0."""
+            if mode:
+                self._emb_cache = None
+                for m in self.modules():
+                    if isinstance(m, BitLinear158):
+                        m._wq_cache = None
+            return super().train(mode)
+
         def num_params(self) -> Dict[str, int]:
             total = sum(p.numel() for p in self.parameters())
             ternary = sum(m.weight.numel() for m in self.modules()

@@ -3437,11 +3437,14 @@
     // Какие веса собеседника ожидает эта страница. Если в памяти браузера лежат другие (старые), в панели mini
     // появляется кнопка «Обновить»: страница не скачивает 8.1 МБ сама, без спроса (мобильный интернет).
     const MINI_CHAT_VERSION = { step: 2700, bestVal: 1.1897, title: "mini2: больше внимания, сжатый эмбеддинг, без памяти фактов" };
+    // Тоже актуальные веса — их не предлагаем «обновить»: собеседник mini2 с навыками «несколько вопросов в одном
+    // сообщении» и «контекст» (отдельный файл slr_net_chat_ru_mini2_context.npz, TRAINING_MINI2_CONTEXT_RU.md).
+    const MINI_CHAT_EXTRA_VERSIONS = [{ step: 4960, bestVal: 1.1936, title: "mini2 + несколько вопросов и контекст" }];
     function miniChatOutdated(bundle) {
       if (!bundle || !bundle.chat) return false;
       const m = bundle.meta || {};
-      return m.step !== MINI_CHAT_VERSION.step || m.bestVal === null ||
-        Math.abs(m.bestVal - MINI_CHAT_VERSION.bestVal) > 1e-3;
+      const same = v => m.step === v.step && m.bestVal !== null && Math.abs(m.bestVal - v.bestVal) <= 1e-3;
+      return !(same(MINI_CHAT_VERSION) || MINI_CHAT_EXTRA_VERSIONS.some(same));
     }
     const miniState = {
       bundle: null,          // { model, tokenizer, cfg, meta }
