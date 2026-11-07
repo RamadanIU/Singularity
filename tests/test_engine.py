@@ -113,6 +113,30 @@ def test_training_step_reduces_loss_and_router_gets_gradient():
     assert abs(first - math.log(50)) < 1.0, "стартовый лосс должен быть около ln(V)"
 
 
+def test_inference_caches_reset_when_training_resumes():
+    """Кэш квантованных весов и эмбеддинга сбрасывается при model.train(). Иначе после шага fused AdamW
+    на видеокарте (он не увеличивает счётчик версий тензора, как и правка через .data) проверка и
+    генерация между шагами шли бы на старых весах (так и было в первом запуске на Colab T4)."""
+    torch.manual_seed(0)
+    model = E.SLRNetLanguageModel(E.make_config("tiny", vocab_size=64, embed_bits=4, embed_group=16)).eval()
+    x = torch.randint(0, 64, (1, 12))
+    with torch.no_grad():
+        before = model(x)[0]
+        for p in model.parameters():
+            p.data.mul_(1.5).add_(0.01)               # «обновление» без счётчика версий
+        stale = model(x)[0]
+        model.train()
+        model.eval()
+        fresh = model(x)[0]
+        model._emb_cache = None
+        for m in model.modules():
+            if isinstance(m, E.BitLinear158):
+                m._wq_cache = None
+        ref = model(x)[0]
+    assert torch.allclose(fresh, ref) and not torch.allclose(fresh, before)
+    assert not torch.allclose(stale, ref)            # без сброса — старые троичные веса
+
+
 def test_bitlinear_ste_gradient_is_identity_wrt_effective_weight():
     torch.manual_seed(4)
     layer = E.BitLinear158(16, 8, use_norm=False)

@@ -383,10 +383,11 @@
           <div class="leading-snug">
             <b class="text-cyan-300">mini2</b> — генеративная модель-собеседник (36 млн параметров): обучена на 2.3 ГБ
             русских субтитров, а затем дообучена вести диалог. Отвечает коротко, помнит, что вы сказали в разговоре,
-            честно говорит «не знаю». Веса (8.1 МБ) загружаются один раз и сохраняются в браузере.
+            отвечает сразу на несколько вопросов и понимает, о чём шла речь («А что в нём интересного?»), честно
+            говорит «не знаю». Веса (8.0 МБ) загружаются один раз и сохраняются в браузере.
           </div>
           <div class="mini-row">
-            <button id="miniDownloadBtn" type="button" class="mini-btn primary">⬇ Скачать собеседника с GitHub (8.1 МБ)</button>
+            <button id="miniDownloadBtn" type="button" class="mini-btn primary">⬇ Скачать собеседника с GitHub (8.0 МБ)</button>
             <button id="miniPickBtn" type="button" class="mini-btn">📂 Выбрать файл .npz</button>
             <input id="miniFileInput" type="file" accept=".npz,application/octet-stream" class="hidden" />
           </div>
@@ -398,9 +399,9 @@
         <div id="miniReadyBox" class="hidden space-y-1">
           <div id="miniStatusText" class="text-[11px] text-emerald-300 leading-snug">✅ mini готова</div>
           <div id="miniUpdateBox" class="hidden mini-row text-[11px] text-amber-200 leading-snug">
-            В браузере сохранена старая версия собеседника. На GitHub есть новая — mini2: втрое больше вычислений,
-            больше внимания, лучше переписывает имена и слова из разговора.
-            <button id="miniUpdateBtn" type="button" class="mini-btn primary">⬇ Обновить (8.1 МБ)</button>
+            В браузере сохранена старая версия собеседника. На GitHub есть новая: отвечает сразу на несколько вопросов
+            в одном сообщении и понимает, о чём шла речь («А что в нём интересного?»).
+            <button id="miniUpdateBtn" type="button" class="mini-btn primary">⬇ Обновить (8.0 МБ)</button>
           </div>
           <div id="miniUpgradeBox" class="hidden mini-row text-[11px] text-amber-200 leading-snug">
             Загружена старая модель-продолжатель субтитров: она не отвечает на вопросы, а дописывает сцену.
@@ -3435,8 +3436,10 @@
       chatMaxNewTokens: 64   // ответы с рассуждением («Рассуждаю: … Значит, …») длиннее 48 токенов
     };
     // Какие веса собеседника ожидает эта страница. Если в памяти браузера лежат другие (старые), в панели mini
-    // появляется кнопка «Обновить»: страница не скачивает 8.1 МБ сама, без спроса (мобильный интернет).
-    const MINI_CHAT_VERSION = { step: 2700, bestVal: 1.1897, title: "mini2: больше внимания, сжатый эмбеддинг, без памяти фактов" };
+    // появляется кнопка «Обновить»: страница не скачивает 8.0 МБ сама, без спроса (мобильный интернет).
+    // Прежние версии: mini2 до навыков «несколько вопросов» и «контекст» — шаг 2700, ошибка 1.1897; mini — без 4-битного
+    // эмбеддинга. У всех них шаг и ошибка другие, поэтому им предлагается «Обновить» (TRAINING_MINI2_CONTEXT_RU.md).
+    const MINI_CHAT_VERSION = { step: 4960, bestVal: 1.1936, title: "mini2: несколько вопросов в одном сообщении и контекст" };
     function miniChatOutdated(bundle) {
       if (!bundle || !bundle.chat) return false;
       const m = bundle.meta || {};

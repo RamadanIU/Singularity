@@ -198,6 +198,8 @@ def sequence_logprobs(model, x, y, routing: str = "threshold"):
     """Сумма log p по токенам, где y != -100, и их число: (B,), (B,). С градиентом, если он включён."""
     import torch
     import torch.nn.functional as F
+    dev = model.tok_embeddings.weight.device              # обучение и проверка на видеокарте (Colab T4)
+    x, y = x.to(dev), y.to(dev)
     logits, _, _ = model(x, routing=routing)
     logp = F.log_softmax(logits.float(), dim=-1)
     valid = y != -100
@@ -219,8 +221,8 @@ def score_sequences(model, seqs: Sequence[Tuple[List[int], List[int]]], pad_id: 
             idx = order[bi:bi + batch_size]
             x, y = pad_batch([seqs[i] for i in idx], pad_id)
             s, n = sequence_logprobs(model, x, y)
-            out[idx, 0] = s.numpy()
-            out[idx, 1] = n.numpy()
+            out[idx, 0] = s.cpu().numpy()
+            out[idx, 1] = n.cpu().numpy()
             if progress and (bi // batch_size) % 200 == 0:
                 print(f"  оценено {bi + len(idx):,}/{len(seqs):,} ({time.time() - t0:.0f} c)", flush=True)
     model.train(was_training)
@@ -385,7 +387,10 @@ def generate_batch(model, tok: ChatTokenizer, ctxs: Sequence[List[int]], n: int 
                 nxt = lg.argmax(dim=-1)
             else:
                 probs = torch.softmax(_filter_logits(lg, temperature, top_k, top_p), dim=-1)
-                nxt = torch.multinomial(probs, 1, generator=generator).squeeze(-1)
+                if generator is not None and generator.device != probs.device:   # генератор на CPU, модель на видеокарте
+                    nxt = torch.multinomial(probs.cpu(), 1, generator=generator).squeeze(-1).to(probs.device)
+                else:
+                    nxt = torch.multinomial(probs, 1, generator=generator).squeeze(-1)
             nxt = torch.where(done, torch.full_like(nxt, stop_id), nxt)
             for i in torch.nonzero(~done).flatten().tolist():
                 out[i].append(int(nxt[i]))
@@ -581,11 +586,27 @@ def cmd_build(args: argparse.Namespace) -> None:
     else:
         print("Добытых пар нет (команда mine не запускалась) — только ручные и шаблонные диалоги")
     data = C.build_dataset(mined, seed=args.seed, n_compose=args.compose, mined_val=args.mined_val,
-                           augment_p=args.augment)
+                           augment_p=args.augment, context_skills=args.context_skills,
+                           context_scale=args.context_scale)
     for name, rows in data.items():
         write_jsonl(out / f"{name}.jsonl", rows)
         print(f"  {name}: {len(rows):,}")
     stats = C.describe(data["sft_train"])
+    new = [r for r in data["sft_train"] if r["src"].startswith(C.CONTEXT_SRC)]
+    if new:
+        # старая часть отдельно: её статистика должна совпасть с сохранённой у нынешней mini2
+        old = [r for r in data["sft_train"] if not r["src"].startswith(C.CONTEXT_SRC)]
+        n_new_probes = sum(1 for p in data["probes"] if p["cat"].startswith(C.CONTEXT_SRC))
+        stats = {**stats, "old_part": C.describe(old), "context_part": C.describe(new),
+                 "probes_old": len(data["probes"]) - n_new_probes, "probes_context": n_new_probes}
+        saved = Path(__file__).resolve().parent / "training" / "chat_reasoning" / "build_final_stats.json"
+        if saved.exists():
+            ref = json.loads(saved.read_text(encoding="utf-8"))
+            same = ref == stats["old_part"]
+            stats["old_part_matches_saved"] = same
+            print(f"Старая часть: {len(old):,} диалогов, {stats['probes_old']:,} задач — статистика "
+                  f"{'СОВПАДАЕТ' if same else 'НЕ совпадает'} с {saved.name}")
+        print(f"Новые навыки: {len(new):,} диалогов, {n_new_probes:,} задач")
     with open(out / "build_stats.json", "w", encoding="utf-8") as f:
         json.dump(stats, f, ensure_ascii=False, indent=2)
     print(json.dumps(stats, ensure_ascii=False, indent=1))
@@ -709,7 +730,10 @@ def cmd_sft(args: argparse.Namespace) -> None:
     args.lr = args.lr or 5e-4
     optimizer = LM.build_optimizer(model, argparse.Namespace(weight_decay=args.weight_decay, lr=args.lr), device)
     train_model = torch.compile(model) if args.compile else model
-    _, autocast_ctx = LM.autocast_for(device, args.dtype)       # bf16 только для умножений; проверка — float32
+    dtype_name, autocast_ctx = LM.autocast_for(device, args.dtype)   # bf16/fp16 только для умножений; проверка — float32
+    # fp16 (Tesla T4 и другие карты без bf16): ошибку масштабируем, чтобы маленькие градиенты не обнулились
+    scaler = torch.amp.GradScaler("cuda", enabled=(dtype_name == "fp16"))
+    print(f"Устройство: {device}, умножения: {dtype_name}")
     out = Path(args.out)
     out.mkdir(parents=True, exist_ok=True)
     with open(out / "config.json", "w", encoding="utf-8") as f:
@@ -726,6 +750,8 @@ def cmd_sft(args: argparse.Namespace) -> None:
         ck = torch.load(args.resume, map_location="cpu", weights_only=False)
         model.load_state_dict(ck["model"])
         optimizer.load_state_dict(ck["optimizer"])
+        if ck.get("scaler") and scaler.is_enabled():
+            scaler.load_state_dict(ck["scaler"])
         start = int(ck["step"])
         rng = random.Random(args.seed + 1_000_003 * start)
         print(f"Продолжение с {args.resume}: шаг {start}, лучшая ошибка {ck['best_val']:.4f}", flush=True)
@@ -757,9 +783,11 @@ def cmd_sft(args: argparse.Namespace) -> None:
         x, y = x.to(device), y.to(device)
         with autocast_ctx:
             _, loss, stats = train_model(x, y)
-        loss.backward()
+        scaler.scale(loss).backward()
+        scaler.unscale_(optimizer)
         gn = torch.nn.utils.clip_grad_norm_(model.parameters(), args.grad_clip)
-        optimizer.step()
+        scaler.step(optimizer)
+        scaler.update()
         optimizer.zero_grad(set_to_none=True)
         if step % args.log_every == 0:
             dt = time.time() - t_last
@@ -780,12 +808,14 @@ def cmd_sft(args: argparse.Namespace) -> None:
             if improved:
                 save_chat_ckpt(out / "best.pt", model, None, tok, step + 1, best)
             if step != total - 1:     # с оптимизатором: можно продолжить с --resume
-                save_chat_ckpt(out / "last.pt", model, optimizer, tok, step + 1, best)
+                save_chat_ckpt(out / "last.pt", model, optimizer, tok, step + 1, best,
+                               {"scaler": scaler.state_dict() if scaler.is_enabled() else None})
             if args.sample_every and ((step + 1) // args.eval_every) % args.sample_every == 0:
                 for q in ("Привет! Как тебя зовут?", "Сколько будет два плюс два?", "Меня зовут Оля. Как меня зовут?"):
                     r = generate_replies(model, tok, prompt_ids(tok, [("user", q)]), n=1, temperature=0)[0]
                     print(f"    {q} -> {reply_text(tok, r)}", flush=True)
-    save_chat_ckpt(out / "last.pt", model, optimizer, tok, total, best)
+    save_chat_ckpt(out / "last.pt", model, optimizer, tok, total, best,
+                   {"scaler": scaler.state_dict() if scaler.is_enabled() else None})
     metrics.close()
     print(f"Готово за {(time.time() - t0) / 60:.1f} мин: {out}/best.pt (лучший по валидации), {out}/last.pt")
 
@@ -835,11 +865,41 @@ def _key_pattern(key: str):
     return re.compile(r"(?<!\w)" + re.escape(k) + (r"(?!\w)" if exact else ""))
 
 
+def _first_match(t: str, keys: Sequence[str], start: int):
+    """Самое раннее совпадение любого из ключей, начиная с позиции start."""
+    best = None
+    for a in keys:
+        if norm_text(a):
+            m = _key_pattern(a).search(t, start)
+            if m and (best is None or m.start() < best.start()):
+                best = m
+    return best
+
+
 def check_reply(text: str, check: Optional[dict]) -> Optional[bool]:
-    """Проверяемая награда: ответ содержит нужное (имя, число, факт) и не содержит запрещённого."""
+    """Проверяемая награда: ответ содержит нужное (имя, число, факт) и не содержит запрещённого.
+    Составная проверка {"all": [...]} — должны пройти все части; "order" — части найдены в ответе в том же
+    порядке, что и вопросы («несколько вопросов в одном сообщении»); "max_words" — ответ не длиннее."""
     if not check:
         return None
     t = norm_text(text)
+    if check.get("max_words") and len(t.split()) > int(check["max_words"]):
+        return False
+    if "all" in check:
+        if check.get("none") and any(_key_pattern(a).search(t) for a in check["none"] if norm_text(a)):
+            return False
+        pos = 0
+        for part in check["all"]:
+            if check.get("order"):
+                m = _first_match(t, part.get("any", []), pos)
+                if m is None:
+                    return False
+                pos = m.end()
+                if part.get("none") and any(_key_pattern(a).search(t) for a in part["none"] if norm_text(a)):
+                    return False
+            elif not check_reply(text, part):
+                return False
+        return True
     if check.get("tail"):                      # проверяем только вывод — текст после последнего «значит»
         i = t.rfind(norm_text(check["tail"]))
         if i < 0:
@@ -1188,8 +1248,9 @@ def cmd_eval(args: argparse.Namespace) -> None:
     open_set = read_jsonl(data / "open_eval.jsonl")[:args.open_items]
     report = {}
     showcase = {}
+    device = LM.pick_device(args.device)
     for path in args.ckpt:
-        model, tok, chat = load_chat_model(path, torch.device("cpu"))
+        model, tok, chat = load_chat_model(path, device)
         name = Path(path).name
         t0 = time.time()
         per_cat: Dict[str, List[int]] = {}
@@ -1208,6 +1269,14 @@ def cmd_eval(args: argparse.Namespace) -> None:
             probe_out.append({"cat": p["cat"], "q": p["turns"][-1][1], "reply": text, "ok": ok})
         probe_acc = {c: float(np.mean(v)) for c, v in sorted(per_cat.items())}
         probe_acc["ВСЕГО"] = float(np.mean([o["ok"] for o in probe_out]))
+        old = [o["ok"] for o in probe_out if not o["cat"].startswith(C.CONTEXT_SRC)]
+        if len(old) < len(probe_out):
+            # прежние задачи (как у нынешней mini2) и новые навыки — отдельно
+            probe_acc["ВСЕГО (прежние задачи)"] = float(np.mean(old)) if old else 0.0
+            for src in C.CONTEXT_SRC:
+                v = [o["ok"] for o in probe_out if o["cat"].startswith(src)]
+                if v:
+                    probe_acc[f"ВСЕГО ({src.split(':')[1]})"] = float(np.mean(v))
         ch = choice_accuracy(model, tok, chat, choice)
         # Форма ответов на открытых вопросах: закончена ли реплика, русский ли язык, длина
         ended = rus = 0
@@ -1232,13 +1301,23 @@ def cmd_eval(args: argparse.Namespace) -> None:
             sc.append({"q": q, "greedy": answer(model, tok, chat, turns, guidance=args.guidance if chat else 0.0),
                        "sampled": answer(model, tok, chat, turns, greedy=False, generator=g,
                                          guidance=args.guidance if chat else 0.0)})
-        report[name] = {"chat": chat, "probes": probe_acc, "choice": ch, "form": form,
+        # ошибка на отложенных диалогах (nats на токен ответа), как при обучении
+        val_loss = {}
+        if chat:
+            for vf in ("sft_val", "sft_val_context"):
+                if (data / f"{vf}.jsonl").exists():
+                    rows = [truncate_dialogue(i, m, 257, tok.user_id)
+                            for i, m, _ in encode_rows(tok, read_jsonl(data / f"{vf}.jsonl"))]
+                    val_loss[vf] = masked_val_loss(model, rows, 16, tok.nl_id)
+        report[name] = {"chat": chat, "probes": probe_acc, "choice": ch, "form": form, "val_loss": val_loss,
                         "seconds": round(time.time() - t0, 1)}
         showcase[name] = {"showcase": sc, "probes": probe_out}
         print(f"\n=== {name} ({'чат' if chat else 'базовая'}) за {time.time() - t0:.0f} c")
         print("  задачи с проверкой:", json.dumps(probe_acc, ensure_ascii=False))
         print("  выбор из 5:", json.dumps(ch, ensure_ascii=False))
         print("  форма:", json.dumps(form, ensure_ascii=False))
+        if val_loss:
+            print("  ошибка на отложенных диалогах:", json.dumps(val_loss, ensure_ascii=False))
         for s in sc[:args.print_showcase]:
             print(f"   {s['q'][-1]!r} -> {s['greedy']!r}")
     if args.json:
@@ -1246,6 +1325,37 @@ def cmd_eval(args: argparse.Namespace) -> None:
             json.dump(report, f, ensure_ascii=False, indent=2)
         with open(Path(args.json).with_name(Path(args.json).stem + "_replies.json"), "w", encoding="utf-8") as f:
             json.dump(showcase, f, ensure_ascii=False, indent=1)
+
+
+def cmd_live(args: argparse.Namespace) -> None:
+    """
+    Живые диалоги без отбора: сценарий — только реплики пользователя, модель отвечает на каждую, видя
+    СВОИ прошлые ответы (как в настоящем чате). Жадный ответ до --max-new токенов. Сценарий — JSON-список
+    диалогов, каждый — список реплик пользователя (по умолчанию — LIVE_DIALOGUES из chat_corpus.py).
+    """
+    import torch
+    import chat_corpus as C
+    torch.set_flush_denormal(True)
+    script = json.loads(Path(args.script).read_text(encoding="utf-8")) if args.script else C.LIVE_DIALOGUES
+    out = {}
+    for path in args.ckpt:
+        model, tok, chat = load_chat_model(path, LM.pick_device(args.device))
+        name = Path(path).name
+        print(f"\n=== {name}")
+        dialogs = []
+        for user_turns in script:
+            turns: List[Tuple[str, str]] = []
+            for u in user_turns:
+                turns.append(("user", u))
+                a = answer(model, tok, chat, turns, max_new=args.max_new, copy=args.copy, copy_start=args.copy_start)
+                turns.append(("bot", a))
+                print(f"  Вы:  {u}\n  Бот: {a}")
+            print()
+            dialogs.append([list(t) for t in turns])
+        out[name] = dialogs
+    if args.json:
+        with open(args.json, "w", encoding="utf-8") as f:
+            json.dump(out, f, ensure_ascii=False, indent=1)
 
 
 # =============================================================================
@@ -1380,6 +1490,9 @@ def main(argv: Optional[List[str]] = None) -> None:
     b.add_argument("--compose", type=int, default=30_000, help="сколько многоходовых диалогов собрать")
     b.add_argument("--augment", type=float, default=0.3, help="доля «небрежных» реплик пользователя")
     b.add_argument("--seed", type=int, default=11)
+    b.add_argument("--no-context-skills", dest="context_skills", action="store_false",
+                   help="без навыков «несколько вопросов» и «контекст» (набор нынешней mini2)")
+    b.add_argument("--context-scale", type=float, default=1.0, help="доля новых навыков (1.0 — по CONTEXT_PLAN)")
 
     s = sub.add_parser("sft", help="обучение с учителем по репликам бота")
     s.add_argument("--base", default="slr_net_subtitles_ru_mini.npz")
@@ -1400,8 +1513,9 @@ def main(argv: Optional[List[str]] = None) -> None:
     s.add_argument("--sample-every", type=int, default=1, help="печатать примеры каждые N проверок (0 — нет)")
     s.add_argument("--log-every", type=int, default=20)
     s.add_argument("--compile", action="store_true")
-    s.add_argument("--dtype", default="auto", choices=["auto", "bf16", "fp32"],
-                   help="bf16 на CPU с AMX — в ~2.5 раза быстрее (см. train_lm.py train --dtype)")
+    s.add_argument("--dtype", default="auto", choices=["auto", "bf16", "fp16", "fp32"],
+                   help="bf16 на CPU с AMX — в ~2.5 раза быстрее; fp16 — на видеокартах без bf16 (Tesla T4), "
+                        "с GradScaler (см. train_lm.py train --dtype)")
     s.add_argument("--device", default="auto")
     s.add_argument("--seed", type=int, default=1234)
 
@@ -1451,6 +1565,16 @@ def main(argv: Optional[List[str]] = None) -> None:
     e.add_argument("--showcase", type=int, default=0, help="сколько примеров диалога (0 — все)")
     e.add_argument("--print-showcase", type=int, default=12)
     e.add_argument("--json", default=None)
+    e.add_argument("--device", default="cpu", help="cpu, cuda или auto")
+
+    lv = sub.add_parser("live", help="живые диалоги по сценарию: модель видит свои прошлые ответы")
+    lv.add_argument("--ckpt", nargs="+", required=True)
+    lv.add_argument("--script", default=None, help="JSON: список диалогов (списков реплик пользователя)")
+    lv.add_argument("--max-new", type=int, default=64)
+    lv.add_argument("--copy", type=float, default=0.0)
+    lv.add_argument("--copy-start", type=float, default=0.0)
+    lv.add_argument("--json", default=None)
+    lv.add_argument("--device", default="cpu", help="cpu, cuda или auto")
 
     c = sub.add_parser("chat", help="диалог в консоли")
     c.add_argument("--ckpt", default="slr_net_chat_ru_mini2.npz")
@@ -1475,7 +1599,7 @@ def main(argv: Optional[List[str]] = None) -> None:
 
     args = ap.parse_args(argv)
     {"mine": cmd_mine, "build": cmd_build, "sft": cmd_sft, "align": cmd_align, "eval": cmd_eval,
-     "chat": cmd_chat, "export": cmd_export}[args.cmd](args)
+     "live": cmd_live, "chat": cmd_chat, "export": cmd_export}[args.cmd](args)
 
 
 if __name__ == "__main__":
