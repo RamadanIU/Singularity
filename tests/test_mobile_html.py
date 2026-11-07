@@ -506,8 +506,7 @@ def test_current_chat_weights_need_no_update_and_long_replies_fit(chat_page):
     assert chat_page.evaluate("() => MINI_LIMITS.chatMaxNewTokens") >= 64
 
 
-CONTEXT_NPZ = os.path.join(ROOT, "slr_net_chat_ru_mini2_context.npz")   # mini2 + «несколько вопросов» и «контекст»
-CONTEXT_PROMPTS = [
+CONTEXT_PROMPTS = [                     # навыки «несколько вопросов в одном сообщении» и «контекст»
     [("user", "Как тебя зовут? Сколько будет 3 + 4? Какая столица Франции?")],
     [("user", "Какой твой любимый фильм?"), ("bot", "Мне нравится «Иван Васильевич меняет профессию»."),
      ("user", "А что в нём интересного?")],
@@ -516,53 +515,50 @@ CONTEXT_PROMPTS = [
 ]
 
 
-def test_context_model_file_runs_in_browser_and_is_not_outdated(browser):
-    """Отдельный файл собеседника с навыками «несколько вопросов» и «контекст» загружается в браузере кнопкой
-    «Выбрать файл», страница не предлагает его «обновить» до прежней mini2, а жадные ответы совпадают с PyTorch."""
-    if not os.path.exists(CONTEXT_NPZ):
-        pytest.skip("нет файла весов slr_net_chat_ru_mini2_context.npz")
+def test_previous_mini2_weights_offer_update(chat_page):
+    """У кого в браузере сохранена прежняя mini2 (до навыков «несколько вопросов» и «контекст»: шаг 2 700,
+    ошибка 1.1897), тому страница предлагает «⬇ Обновить»; нынешние веса — актуальны."""
+    assert chat_page.evaluate("() => miniChatOutdated({chat: true, meta: {step: 2700, bestVal: 1.1897}})") is True
+    with np.load(CHAT_NPZ) as z:
+        step, best = int(z["meta.step"][0]), float(z["meta.best_val"][0])
+    assert chat_page.evaluate(f"() => miniChatOutdated({{chat: true, meta: {{step: {step}, bestVal: {best}}}}})") is False
+
+
+def test_context_skills_in_browser_match_pytorch(chat_page):
+    """Ответы на несколько вопросов и вопросы-продолжения в браузере совпадают с PyTorch. Расхождение допустимо
+    только на «ничьей»: PyTorch считает оба токена почти равновероятными (порядок сложения float32 в JS и PyTorch
+    разный), после чего ответы просто идут разными, одинаково возможными путями."""
     torch = pytest.importorskip("torch")
     pytest.importorskip("sentencepiece")
     sys.path.insert(0, ROOT)
     import train_chat
-    pg = _open_page(browser)
-    try:
-        pg.click("#modeMiniBtn")
-        pg.set_input_files("#miniFileInput", CONTEXT_NPZ)
-        pg.wait_for_function("() => miniState.bundle !== null && !miniState.loading", timeout=60000)
-        assert pg.evaluate("() => miniChatOutdated(miniState.bundle)") is False
-        assert pg.evaluate("() => document.getElementById('miniUpdateBox').classList.contains('hidden')")
-        assert pg.evaluate("() => miniChatOutdated({chat: true, meta: {step: 1, bestVal: 2.0}})") is True
-        model, tok, chat = train_chat.load_chat_model(CONTEXT_NPZ, torch.device("cpu"))
-        for turns in CONTEXT_PROMPTS:
-            ctx = train_chat.prompt_ids(tok, turns)
-            ref = train_chat.generate_replies(model, tok, ctx, n=1, max_new_tokens=40, temperature=0,
-                                              repetition_penalty=1.0)[0]
-            js = pg.evaluate("""([ctx, maxNew]) => {
-                const { model, tokenizer: tok, chat } = miniState.bundle;
-                const st = model.newState(), lg = new Float32Array(model.V);
-                for (const t of ctx) model.step(t, st, lg);
-                const banned = [tok.eosId, tok.bosId, tok.unkId, chat.userId, chat.botId], out = [];
-                for (let n = 0; n < maxNew; n++) {
-                    const t = SLRMini.sampleToken(lg, { temperature: 0, repetitionPenalty: 1,
-                                                        banned: n === 0 ? [...banned, tok.nlId] : banned });
-                    out.push(t);
-                    if (t === tok.nlId) break;
-                    model.step(t, st, lg);
-                }
-                return out;
-            }""", [ctx, 40])
-            if js != ref:
-                # расхождение допустимо только на «ничьей»: PyTorch считает оба токена почти равновероятными
-                # (порядок сложения float32 в JS и PyTorch разный), а дальше ответы просто идут разными путями
-                i = next(k for k, (a, b) in enumerate(zip(js, ref)) if a != b)
-                with torch.no_grad():
-                    logits = model(torch.tensor([ctx + ref[:i]]))[0][0, -1].float()
-                gap = float(logits[ref[i]] - logits[js[i]])
-                assert 0 <= gap < 0.1, (turns, i, gap, tok.decode(js), tok.decode(ref))
-        assert pg.errors == []
-    finally:
-        pg.close()
+    model, tok, chat = train_chat.load_chat_model(CHAT_NPZ, torch.device("cpu"))
+    for turns in CONTEXT_PROMPTS:
+        ctx = train_chat.prompt_ids(tok, turns)
+        ref = train_chat.generate_replies(model, tok, ctx, n=1, max_new_tokens=40, temperature=0,
+                                          repetition_penalty=1.0)[0]
+        js = chat_page.evaluate("""([ctx, maxNew]) => {
+            const { model, tokenizer: tok, chat } = miniState.bundle;
+            const st = model.newState(), lg = new Float32Array(model.V);
+            for (const t of ctx) model.step(t, st, lg);
+            const banned = [tok.eosId, tok.bosId, tok.unkId, chat.userId, chat.botId], out = [];
+            for (let n = 0; n < maxNew; n++) {
+                const t = SLRMini.sampleToken(lg, { temperature: 0, repetitionPenalty: 1,
+                                                    banned: n === 0 ? [...banned, tok.nlId] : banned });
+                out.push(t);
+                if (t === tok.nlId) break;
+                model.step(t, st, lg);
+            }
+            return out;
+        }""", [ctx, 40])
+        if js != ref:
+            i = next(k for k, (a, b) in enumerate(zip(js, ref)) if a != b)
+            with torch.no_grad():
+                logits = model(torch.tensor([ctx + ref[:i]]))[0][0, -1].float()
+            gap = float(logits[ref[i]] - logits[js[i]])
+            assert 0 <= gap < 0.1, (turns, i, gap, tok.decode(js), tok.decode(ref))
+        else:
+            assert tok.decode(js).strip(), turns
 
 
 def test_old_chat_weights_offer_update(browser):
