@@ -307,6 +307,41 @@ def test_tiny_pipeline_sft_align_export_chat(tmp_path, tiny_base, tok, capsys):
     assert "chat.npz" in rep and "ВСЕГО" in rep["chat.npz"]["probes"]
 
 
+def test_sft_fp16_option_and_live_dialogues(tmp_path, tiny_base, tok, capsys):
+    """--dtype fp16 (Tesla T4): на процессоре — понятная ошибка, на видеокарте — обучение с GradScaler, чьё
+    состояние сохраняется для --resume. live: модель отвечает на сценарий, видя свои прошлые ответы."""
+    data = C.build_dataset([], seed=3, n_compose=50, scale=0.01)
+    ddir = tmp_path / "data"
+    ddir.mkdir()
+    for k, rows in data.items():
+        T.write_jsonl(ddir / f"{k}.jsonl", rows[:200] if k == "sft_train" else rows[:20])
+    common = ["sft", "--base", tiny_base, "--data", str(ddir), "--seq-len", "64", "--batch-size", "4",
+              "--max-steps", "4", "--warmup", "1", "--eval-every", "2", "--log-every", "1", "--sample-every", "0"]
+    if not torch.cuda.is_available():
+        with pytest.raises(ValueError, match="fp16"):
+            T.main(common + ["--out", str(tmp_path / "fp16"), "--dtype", "fp16", "--device", "cpu"])
+    else:
+        T.main(common + ["--out", str(tmp_path / "fp16"), "--dtype", "fp16", "--device", "cuda"])
+        ck = torch.load(tmp_path / "fp16" / "last.pt", map_location="cpu", weights_only=False)
+        assert ck["scaler"] and ck["scaler"]["scale"] > 0
+        T.main(common[:-8] + ["--max-steps", "6", "--warmup", "1", "--eval-every", "2", "--log-every", "1",
+                              "--sample-every", "0", "--out", str(tmp_path / "fp16"), "--dtype", "fp16",
+                              "--device", "cuda", "--resume", str(tmp_path / "fp16" / "last.pt")])
+    out = tmp_path / "fp32"
+    T.main(common + ["--out", str(out), "--dtype", "fp32", "--device", "cpu"])
+    ck = torch.load(out / "last.pt", map_location="cpu", weights_only=False)
+    assert "scaler" in ck and ck["scaler"] is None                     # на fp32 масштабирование выключено
+    assert "умножения: fp32" in capsys.readouterr().out
+    script = tmp_path / "live.json"
+    script.write_text(json.dumps([["Какой твой любимый фильм?", "А что в нём интересного?"]], ensure_ascii=False),
+                      encoding="utf-8")
+    T.main(["live", "--ckpt", str(out / "last.pt"), "--script", str(script), "--max-new", "4",
+            "--json", str(tmp_path / "live_out.json")])
+    res = json.loads((tmp_path / "live_out.json").read_text(encoding="utf-8"))
+    dialog = res["last.pt"][0]
+    assert [t[0] for t in dialog] == ["user", "bot", "user", "bot"] and dialog[2][1] == "А что в нём интересного?"
+
+
 # (чат-модель, её базовая модель, сколько из 10 базовая модель может «угадать» сама). У базовой mini2 три
 # совпадения случайные: «Где я живу?» -> «Я живу в Казани.», «2 + 3?» -> «3 5 5 5 …», погода -> «Я не знаю.».
 SHIPPED_CHATS = [(CHAT_NPZ, BASE_NPZ, 2),                                     # mini
