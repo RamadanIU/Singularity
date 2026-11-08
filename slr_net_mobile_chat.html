@@ -1,211 +1,295 @@
 <!DOCTYPE html>
-<html lang="ru" class="dark">
+<html lang="ru" data-theme="dark">
 <head>
   <meta charset="UTF-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no, viewport-fit=cover" />
-  <meta name="theme-color" content="#090d16" />
+  <meta name="theme-color" content="#080808" />
+  <meta name="color-scheme" content="dark light" />
   <meta name="apple-mobile-web-app-capable" content="yes" />
   <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent" />
-  <title>SLR-Net b1.58 — Мобильный нейрочат и тренажёр</title>
-  <script src="https://cdn.tailwindcss.com/3.4.17"></script>
-  <link rel="preconnect" href="https://fonts.googleapis.com" />
-  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
-  <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&family=JetBrains+Mono:wght@400;500;600&display=swap" rel="stylesheet" />
+  <title>Singularity</title>
+  <script>
+    // Тема выставляется до первой отрисовки, чтобы экран не мигал: сохранённая → как в системе → тёмная
+    (function () {
+      var theme = null;
+      try { theme = localStorage.getItem("singularity_theme"); } catch (e) { /* песочница */ }
+      if (theme !== "light" && theme !== "dark") {
+        theme = window.matchMedia && window.matchMedia("(prefers-color-scheme: light)").matches ? "light" : "dark";
+      }
+      document.documentElement.setAttribute("data-theme", theme);
+    })();
+  </script>
   <style>
+    /* Визуальный стиль — как в Agent Pro: строгий монохром, тонкие рамки, без градиентов.
+       Всё оформление встроено в файл: страница выглядит одинаково и без интернета. */
+
+    /* ===== ТЁМНАЯ ТЕМА ===== */
+    :root, [data-theme="dark"] {
+      --bg-0: #080808;
+      --bg-1: #0f0f0f;
+      --bg-2: #161616;
+      --bg-3: #1e1e1e;
+      --bg-4: #262626;
+
+      --text-0: #f0f0f0;
+      --text-1: #a8a8a8;
+      --text-2: #686868;
+      --text-3: #3a3a3a;
+
+      --border-0: rgba(255, 255, 255, 0.07);
+      --border-1: rgba(255, 255, 255, 0.04);
+      --border-focus: rgba(255, 255, 255, 0.18);
+      --border-strong: rgba(255, 255, 255, 0.12);
+
+      --accent-dim: rgba(255, 255, 255, 0.08);
+
+      --success: #3fb950;
+      --success-bg: rgba(63, 185, 80, 0.08);
+      --success-border: rgba(63, 185, 80, 0.15);
+      --error: #f85149;
+      --error-bg: rgba(248, 81, 73, 0.08);
+      --error-border: rgba(248, 81, 73, 0.15);
+      --warning: #d29922;
+      --warning-bg: rgba(210, 153, 34, 0.08);
+      --warning-border: rgba(210, 153, 34, 0.18);
+
+      --shadow: rgba(0, 0, 0, 0.5);
+      --shadow-lg: rgba(0, 0, 0, 0.7);
+      --code-bg: #0a0a0a;
+
+      --think-bg: rgba(210, 153, 34, 0.10);
+      --think-border: rgba(210, 153, 34, 0.28);
+      --think-text: #e3b341;
+      --fast-bg: rgba(255, 255, 255, 0.035);
+      --fast-border: rgba(255, 255, 255, 0.07);
+
+      --welcome-glow-near: rgba(255, 255, 255, 0.18);
+      --welcome-glow-far: rgba(255, 255, 255, 0.06);
+    }
+
+    /* ===== СВЕТЛАЯ ТЕМА ===== */
+    [data-theme="light"] {
+      --bg-0: #ffffff;
+      --bg-1: #fafafa;
+      --bg-2: #f5f5f5;
+      --bg-3: #eeeeee;
+      --bg-4: #e8e8e8;
+
+      --text-0: #0a0a0a;
+      --text-1: #525252;
+      --text-2: #909090;
+      --text-3: #c0c0c0;
+
+      --border-0: rgba(0, 0, 0, 0.08);
+      --border-1: rgba(0, 0, 0, 0.05);
+      --border-focus: rgba(0, 0, 0, 0.2);
+      --border-strong: rgba(0, 0, 0, 0.14);
+
+      --accent-dim: rgba(0, 0, 0, 0.05);
+
+      --success: #1a7f37;
+      --success-bg: rgba(26, 127, 55, 0.06);
+      --success-border: rgba(26, 127, 55, 0.14);
+      --error: #cf222e;
+      --error-bg: rgba(207, 34, 46, 0.06);
+      --error-border: rgba(207, 34, 46, 0.14);
+      --warning: #9a6700;
+      --warning-bg: rgba(154, 103, 0, 0.06);
+      --warning-border: rgba(154, 103, 0, 0.16);
+
+      --shadow: rgba(0, 0, 0, 0.06);
+      --shadow-lg: rgba(0, 0, 0, 0.12);
+      --code-bg: #f6f8fa;
+
+      --think-bg: rgba(154, 103, 0, 0.08);
+      --think-border: rgba(154, 103, 0, 0.24);
+      --think-text: #7d4e00;
+      --fast-bg: rgba(0, 0, 0, 0.03);
+      --fast-border: rgba(0, 0, 0, 0.07);
+
+      --welcome-glow-near: rgba(0, 0, 0, 0.12);
+      --welcome-glow-far: rgba(0, 0, 0, 0.04);
+    }
+
     :root {
-      --bg-primary: #090d16;
-      --bg-card: #111827;
-      --bg-elevated: #1e293b;
-      --accent-cyan: #06b6d4;
-      --accent-violet: #8b5cf6;
-      --accent-emerald: #10b981;
-      --text-main: #f8fafc;
-      --text-muted: #94a3b8;
+      --r-xs: 3px;
+      --r-sm: 5px;
+      --r-md: 8px;
+      --r-lg: 12px;
+      --r-xl: 16px;
+
+      --font-sans: 'SF Pro Display', -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
+      --font-mono: 'SF Mono', 'Fira Code', ui-monospace, Menlo, Consolas, monospace;
+
+      --ease-out-expo: cubic-bezier(0.16, 1, 0.3, 1);
+      --ease-out-quart: cubic-bezier(0.25, 1, 0.5, 1);
+      --ease-spring: cubic-bezier(0.34, 1.56, 0.64, 1);
+      --ease-soft: cubic-bezier(0.4, 0, 0.2, 1);
+      --transition: 0.22s var(--ease-out-quart);
+      --transition-slow: 0.4s var(--ease-out-expo);
+      --transition-spring: 0.45s var(--ease-spring);
+
       --safe-bottom: env(safe-area-inset-bottom, 0px);
       --safe-top: env(safe-area-inset-top, 0px);
     }
 
-    * {
+    *, *::before, *::after {
       box-sizing: border-box;
+      margin: 0;
+      padding: 0;
       -webkit-tap-highlight-color: transparent;
     }
 
     html, body {
-      margin: 0;
-      padding: 0;
       width: 100%;
       height: 100%;
       overflow: hidden;
-      background-color: var(--bg-primary);
-      color: var(--text-main);
-      font-family: 'Inter', -apple-system, BlinkMacSystemFont, sans-serif;
+      background: var(--bg-0);
+      color: var(--text-0);
+      font-family: var(--font-sans);
+      line-height: 1.5;
       -webkit-font-smoothing: antialiased;
     }
+    html { transition: background-color var(--transition-slow); }
 
-    .mono {
-      font-family: 'JetBrains Mono', monospace;
+    button, input, select, textarea { font-family: inherit; color: inherit; }
+    button { cursor: pointer; }
+    code, .mono { font-family: var(--font-mono); }
+    code {
+      font-size: 0.92em;
+      padding: 1px 5px;
+      border-radius: var(--r-xs);
+      background: var(--bg-3);
+      color: var(--text-0);
+    }
+    b, strong { font-weight: 600; color: var(--text-0); }
+
+    .hidden { display: none !important; }
+    .icon { width: 14px; height: 14px; flex-shrink: 0; display: block; }
+    button:focus-visible, label.btn:focus-visible, select:focus-visible {
+      outline: 2px solid var(--border-focus);
+      outline-offset: 2px;
     }
 
-    /* Fallback layout styles if opened offline without Tailwind CDN */
+    ::-webkit-scrollbar { width: 4px; height: 4px; }
+    ::-webkit-scrollbar-track { background: transparent; }
+    ::-webkit-scrollbar-thumb { background: var(--border-0); border-radius: 2px; }
+    ::-webkit-scrollbar-thumb:hover { background: var(--text-3); }
+    .no-scrollbar { -ms-overflow-style: none; scrollbar-width: none; }
+    .no-scrollbar::-webkit-scrollbar { display: none; }
+
+    /* Плавная смена темы — только цвета, без перерасчёта раскладки */
+    body, .status-bar, .tabbar, .chat-input-wrapper, .card, .msg, .chip-btn, .btn, .mode-btn {
+      transition: background-color var(--transition-slow), border-color var(--transition-slow), color var(--transition);
+    }
+
+    /* ===== КАРКАС ===== */
     .app-shell {
       display: flex;
       flex-direction: column;
+      height: 100vh;
       height: 100dvh;
-      max-width: 520px;
-      margin: 0 auto;
-      background: radial-gradient(circle at 50% 0%, rgba(139, 92, 246, 0.12), transparent 55%),
-                  radial-gradient(circle at 90% 20%, rgba(6, 182, 212, 0.10), transparent 45%),
-                  #090d16;
-      border-left: 1px solid rgba(255, 255, 255, 0.06);
-      border-right: 1px solid rgba(255, 255, 255, 0.06);
+      width: 100%;
+      background: var(--bg-0);
+    }
+
+    /* ===== ВЕРХНЯЯ СТРОКА СОСТОЯНИЯ ===== */
+    .status-bar {
+      order: 0;
+      display: flex;
+      align-items: center;
+      gap: 8px;
+      min-height: 40px;
+      padding: calc(6px + var(--safe-top)) 12px 6px;
+      background: var(--bg-1);
+      border-bottom: 1px solid var(--border-0);
+      font-size: 11px;
+      color: var(--text-2);
+      flex-shrink: 0;
       position: relative;
+      z-index: 50;
     }
-
-    .glass-header {
-      padding-top: calc(0.65rem + var(--safe-top));
-      padding-bottom: 0.65rem;
-      padding-left: 1rem;
-      padding-right: 1rem;
-      background: rgba(15, 23, 42, 0.85);
-      backdrop-filter: blur(16px);
-      -webkit-backdrop-filter: blur(16px);
-      border-bottom: 1px solid rgba(255, 255, 255, 0.08);
-      z-index: 20;
-      flex-shrink: 0;
-    }
-
-    .main-viewport {
-      flex: 1;
-      overflow-y: auto;
-      overflow-x: hidden;
-      scroll-behavior: smooth;
-      -webkit-overflow-scrolling: touch;
-    }
-
-    .no-scrollbar::-webkit-scrollbar {
-      display: none;
-    }
-    .no-scrollbar {
-      -ms-overflow-style: none;
-      scrollbar-width: none;
-    }
-
-    /* Prevent iOS zoom on input focus */
-    input, textarea, select {
-      font-size: 16px !important;
-    }
-
-    .chip-scroll {
-      display: flex;
-      gap: 0.5rem;
-      overflow-x: auto;
-      padding: 0.5rem 0.85rem;
-      scroll-snap-type: x mandatory;
-    }
-
-    .chip-btn {
-      scroll-snap-align: start;
+    .brand {
+      font-size: 13px;
+      font-weight: 600;
+      letter-spacing: 0.02em;
+      color: var(--text-0);
       white-space: nowrap;
-      padding: 0.45rem 0.85rem;
-      border-radius: 9999px;
-      font-size: 0.8rem;
-      font-weight: 500;
-      background: rgba(30, 41, 59, 0.85);
-      border: 1px solid rgba(148, 163, 184, 0.2);
-      color: #e2e8f0;
-      transition: all 0.15s ease;
-      cursor: pointer;
+    }
+    .status-dot {
+      width: 6px;
+      height: 6px;
+      border-radius: 50%;
+      background: var(--text-3);
       flex-shrink: 0;
+      transition: background var(--transition), box-shadow var(--transition);
     }
-    .chip-btn:active {
-      transform: scale(0.96);
-      background: rgba(139, 92, 246, 0.25);
-      border-color: rgba(139, 92, 246, 0.6);
+    .status-dot.ok { background: var(--success); }
+    .status-dot.working { background: var(--warning); box-shadow: 0 0 6px var(--warning); animation: dotPulse 1.2s ease-in-out infinite; }
+    @keyframes dotPulse { 0%, 100% { opacity: 1; } 50% { opacity: 0.4; } }
+    .status-text {
+      flex: 1;
+      min-width: 0;
+      overflow: hidden;
+      text-overflow: ellipsis;
+      white-space: nowrap;
+      font-family: var(--font-mono);
+      letter-spacing: 0.01em;
     }
+    .status-actions { display: flex; align-items: center; gap: 4px; flex-shrink: 0; margin-left: auto; }
 
-    .token-pill-thought {
+    .icon-btn {
+      width: 28px;
+      height: 28px;
       display: inline-flex;
-      align-items: center;
-      gap: 2px;
-      padding: 1px 6px;
-      margin: 1px 1px;
-      border-radius: 6px;
-      background: rgba(139, 92, 246, 0.22);
-      border: 1px solid rgba(139, 92, 246, 0.45);
-      color: #ede9fe;
-    }
-
-    .token-pill-fast {
-      display: inline-flex;
-      align-items: center;
-      padding: 1px 4px;
-      margin: 1px 0;
-      border-radius: 5px;
-      background: rgba(16, 185, 129, 0.12);
-      border: 1px solid rgba(16, 185, 129, 0.28);
-      color: #d1fae5;
-    }
-
-    .bottom-nav {
-      padding-bottom: calc(0.45rem + var(--safe-bottom));
-      padding-top: 0.4rem;
-      background: rgba(11, 15, 25, 0.94);
-      backdrop-filter: blur(16px);
-      -webkit-backdrop-filter: blur(16px);
-      border-top: 1px solid rgba(255, 255, 255, 0.08);
-      display: grid;
-      grid-template-columns: repeat(3, 1fr);
-      z-index: 30;
-      flex-shrink: 0;
-    }
-
-    .nav-item {
-      display: flex;
-      flex-direction: column;
       align-items: center;
       justify-content: center;
-      gap: 2px;
-      padding: 0.35rem 0;
-      color: #64748b;
-      font-size: 0.72rem;
-      font-weight: 600;
-      border: none;
       background: transparent;
-      cursor: pointer;
-      transition: color 0.15s ease;
+      border: 1px solid transparent;
+      border-radius: var(--r-sm);
+      color: var(--text-2);
+      transition: all var(--transition);
+      flex-shrink: 0;
     }
+    .icon-btn:hover { background: var(--bg-3); border-color: var(--border-0); color: var(--text-0); }
+    .icon-btn:active { transform: scale(0.94); }
+    .icon-btn.danger:hover { background: var(--error-bg); border-color: var(--error-border); color: var(--error); }
 
-    .nav-item.active {
-      color: #38bdf8;
+    .toggle-btn {
+      display: inline-flex;
+      align-items: center;
+      gap: 5px;
+      height: 26px;
+      padding: 0 10px;
+      background: transparent;
+      border: 1px solid var(--border-0);
+      border-radius: var(--r-sm);
+      color: var(--text-2);
+      font-size: 11px;
+      font-weight: 500;
+      white-space: nowrap;
+      transition: all var(--transition);
     }
+    .toggle-btn .icon { width: 12px; height: 12px; }
+    .toggle-btn:hover { background: var(--bg-3); border-color: var(--border-focus); color: var(--text-0); }
+    .toggle-btn.active { background: var(--bg-3); border-color: var(--border-focus); color: var(--text-0); }
+    .toggle-btn .toggle-state {
+      font-size: 9px;
+      font-weight: 600;
+      letter-spacing: 0.08em;
+      text-transform: uppercase;
+      color: var(--text-3);
+    }
+    .toggle-btn.active .toggle-state { color: var(--warning); }
 
-    @keyframes pulseGlow {
-      0%, 100% { opacity: 1; transform: scale(1); }
-      50% { opacity: 0.55; transform: scale(0.92); }
-    }
-    .pulse-dot {
-      animation: pulseGlow 2s infinite ease-in-out;
-    }
+    /* Иконка солнца в тёмной теме, луны — в светлой */
+    [data-theme="dark"] .theme-icon-moon, [data-theme="light"] .theme-icon-sun { display: none; }
 
-    /* Прогресс загрузки файла и обучения (работает и без Tailwind, офлайн) */
-    .progress-track {
-      position: relative;
-      height: 10px;
-      border-radius: 999px;
-      background: rgba(30, 41, 59, 0.9);
-      border: 1px solid rgba(148, 163, 184, 0.18);
-      overflow: hidden;
-    }
-    .progress-fill {
-      height: 100%;
-      width: 0%;
-      border-radius: 999px;
-      background: linear-gradient(90deg, #8b5cf6, #06b6d4);
-      transition: width 0.25s ease;
-    }
+    /* Тонкая полоса прогресса под шапкой: видна на любой вкладке */
     .global-progress {
-      height: 3px;
-      background: rgba(30, 41, 59, 0.9);
+      order: 1;
+      height: 2px;
+      background: var(--bg-3);
       flex-shrink: 0;
       overflow: hidden;
       cursor: pointer;
@@ -213,162 +297,925 @@
     .global-progress > div {
       height: 100%;
       width: 0%;
-      background: linear-gradient(90deg, #8b5cf6, #06b6d4);
+      background: var(--text-0);
       transition: width 0.25s ease;
     }
-    /* Переключатель модели «Обычная / mini» и панель mini (работают и без Tailwind) */
-    .mode-bar {
-      padding: 0.5rem 0.85rem 0;
+
+    /* ===== ВКЛАДКИ (внизу на телефоне, сверху на компьютере) ===== */
+    .tabbar {
+      order: 10;
+      display: grid;
+      grid-template-columns: repeat(3, 1fr);
+      background: var(--bg-1);
+      border-top: 1px solid var(--border-0);
+      padding-bottom: var(--safe-bottom);
       flex-shrink: 0;
+      z-index: 30;
+    }
+    .nav-item {
+      position: relative;
+      display: flex;
+      flex-direction: column;
+      align-items: center;
+      justify-content: center;
+      gap: 3px;
+      height: 54px;
+      background: transparent;
+      border: none;
+      color: var(--text-2);
+      font-size: 10px;
+      font-weight: 600;
+      letter-spacing: 0.04em;
+      text-transform: uppercase;
+      transition: color var(--transition);
+    }
+    .nav-item .icon { width: 18px; height: 18px; transition: transform var(--transition-spring); }
+    .nav-item:hover { color: var(--text-1); }
+    .nav-item.active { color: var(--text-0); }
+    .nav-item.active .icon { transform: translateY(-1px) scale(1.06); }
+    .nav-item::after {
+      content: '';
+      position: absolute;
+      left: 50%;
+      bottom: 5px;
+      width: 22px;
+      height: 2px;
+      border-radius: 2px;
+      background: var(--text-0);
+      transform: translateX(-50%) scaleX(0);
+      opacity: 0;
+      transition: transform 0.35s var(--ease-out-expo), opacity 0.25s var(--ease-out-quart);
+    }
+    .nav-item.active::after { transform: translateX(-50%) scaleX(1); opacity: 1; }
+
+    /* ===== ОБЛАСТЬ ВКЛАДОК ===== */
+    .view {
+      order: 5;
+      flex: 1;
+      min-height: 0;
+      width: 100%;
+      animation: viewIn 0.32s var(--ease-out-expo) both;
+    }
+    @keyframes viewIn {
+      from { opacity: 0; transform: translateY(4px); }
+      to { opacity: 1; transform: none; }
+    }
+    .chat-view {
+      display: flex;
+      flex-direction: column;
+      overflow: hidden;
+    }
+    .page {
+      overflow-y: auto;
+      overflow-x: hidden;
+      -webkit-overflow-scrolling: touch;
+    }
+    .page-inner {
+      max-width: 760px;
+      margin: 0 auto;
+      padding: 20px 16px 32px;
+      display: flex;
+      flex-direction: column;
+      gap: 12px;
+    }
+
+    /* ===== ПЕРЕКЛЮЧАТЕЛЬ МОДЕЛИ ===== */
+    .mode-bar {
+      flex-shrink: 0;
+      padding: 0 16px;
+      border-bottom: 1px solid var(--border-1);
     }
     .mode-switch {
       display: grid;
       grid-template-columns: 1fr 1fr;
-      gap: 4px;
-      padding: 4px;
-      border-radius: 14px;
-      background: rgba(15, 23, 42, 0.9);
-      border: 1px solid rgba(148, 163, 184, 0.18);
     }
     .mode-btn {
       display: flex;
       flex-direction: column;
-      align-items: center;
+      align-items: flex-start;
       gap: 1px;
-      padding: 6px 4px;
-      border-radius: 10px;
-      border: 1px solid transparent;
+      padding: 9px 4px 8px;
       background: transparent;
-      color: #94a3b8;
-      font-size: 0.82rem;
-      font-weight: 700;
-      line-height: 1.15;
-      cursor: pointer;
+      border: none;
+      border-bottom: 1.5px solid transparent;
+      margin-bottom: -1px;
+      color: var(--text-2);
+      font-size: 13px;
+      font-weight: 500;
+      line-height: 1.25;
+      text-align: left;
+      transition: color var(--transition), border-color var(--transition);
     }
     .mode-btn small {
-      font-size: 0.66rem;
+      max-width: 100%;
+      overflow: hidden;
+      text-overflow: ellipsis;
+      white-space: nowrap;
+      font-size: 11px;
+      font-weight: 400;
+      color: var(--text-3);
+      transition: color var(--transition);
+    }
+    .mode-btn:hover { color: var(--text-1); }
+    .mode-btn.active { color: var(--text-0); border-bottom-color: var(--text-0); }
+    .mode-btn.active small { color: var(--text-2); }
+
+    /* ===== КАРТОЧКИ, КНОПКИ, ПОЛЯ ===== */
+    .card {
+      background: var(--bg-1);
+      border: 1px solid var(--border-0);
+      border-radius: var(--r-lg);
+      padding: 14px;
+    }
+    .section-label {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      gap: 8px;
+      font-size: 10px;
+      font-weight: 600;
+      letter-spacing: 0.08em;
+      text-transform: uppercase;
+      color: var(--text-2);
+    }
+    .card-title {
+      font-size: 13px;
+      font-weight: 600;
+      color: var(--text-0);
+    }
+    .muted { font-size: 12px; line-height: 1.65; color: var(--text-1); }
+    .subtle { font-size: 11px; line-height: 1.6; color: var(--text-2); }
+    .badge {
+      display: inline-flex;
+      align-items: center;
+      padding: 1px 8px;
+      border-radius: 10px;
+      font-size: 10px;
       font-weight: 500;
-      color: #64748b;
+      font-family: var(--font-mono);
+      letter-spacing: 0;
+      text-transform: none;
+      background: var(--bg-3);
+      color: var(--text-1);
+      border: 1px solid var(--border-0);
+      white-space: nowrap;
     }
-    .mode-btn.active {
-      background: linear-gradient(90deg, rgba(139, 92, 246, 0.32), rgba(6, 182, 212, 0.26));
-      border-color: rgba(139, 92, 246, 0.55);
-      color: #f8fafc;
+    .badge.success { background: var(--success-bg); color: var(--success); border-color: var(--success-border); }
+
+    .btn {
+      display: inline-flex;
+      align-items: center;
+      justify-content: center;
+      gap: 6px;
+      height: 32px;
+      padding: 0 12px;
+      border-radius: var(--r-md);
+      border: 1px solid var(--border-0);
+      background: var(--bg-2);
+      color: var(--text-0);
+      font-size: 12px;
+      font-weight: 500;
+      white-space: nowrap;
+      transition: all var(--transition);
     }
-    .mode-btn.active small {
-      color: #cbd5e1;
+    .btn .icon { width: 13px; height: 13px; }
+    .btn:hover { background: var(--bg-3); border-color: var(--border-focus); }
+    .btn:active { transform: scale(0.97); }
+    .btn.primary { background: var(--text-0); color: var(--bg-0); border-color: transparent; font-weight: 600; }
+    .btn.primary:hover { opacity: 0.85; background: var(--text-0); }
+    .btn.lg { height: 40px; padding: 0 16px; }
+    .btn:disabled { opacity: 0.45; cursor: default; transform: none; }
+
+    .field-input, .field-select, .field-textarea {
+      width: 100%;
+      background: var(--bg-2);
+      border: 1px solid var(--border-0);
+      border-radius: var(--r-md);
+      color: var(--text-0);
+      font-size: 12px;
+      outline: none;
+      transition: border-color var(--transition), box-shadow var(--transition);
     }
+    .field-input { height: 34px; padding: 0 11px; }
+    .field-select {
+      height: 32px;
+      padding: 0 28px 0 10px;
+      appearance: none;
+      -webkit-appearance: none;
+      background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='12' height='12' viewBox='0 0 24 24' fill='none' stroke='%23808080' stroke-width='2'%3E%3Cpolyline points='6 9 12 15 18 9'/%3E%3C/svg%3E");
+      background-repeat: no-repeat;
+      background-position: right 9px center;
+    }
+    .field-select.sm { height: 26px; font-size: 11px; padding: 0 24px 0 8px; background-position: right 7px center; }
+    .field-textarea {
+      padding: 10px 12px;
+      font-family: var(--font-mono);
+      font-size: 12px;
+      line-height: 1.65;
+      resize: vertical;
+      min-height: 140px;
+    }
+    .field-input:focus, .field-select:focus, .field-textarea:focus {
+      border-color: var(--border-focus);
+      box-shadow: 0 0 0 3px var(--accent-dim);
+    }
+    .field-input::placeholder, .field-textarea::placeholder { color: var(--text-3); }
+    .row { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; }
+    .grow { flex: 1; min-width: 0; }
+
+    .progress-track {
+      position: relative;
+      height: 3px;
+      border-radius: 2px;
+      background: var(--bg-3);
+      overflow: hidden;
+    }
+    .progress-fill {
+      height: 100%;
+      width: 0%;
+      border-radius: 2px;
+      background: var(--text-0);
+      transition: width 0.25s ease;
+    }
+
+    /* ===== ПАНЕЛЬ mini ===== */
     .mini-panel {
-      margin: 0.5rem 0.85rem 0.3rem;
-      padding: 0.6rem 0.75rem;
-      border-radius: 14px;
-      background: rgba(2, 6, 23, 0.82);
-      border: 1px solid rgba(6, 182, 212, 0.32);
-      font-size: 0.75rem;
-      color: #cbd5e1;
       flex-shrink: 0;
+      margin: 10px 16px 0;
+      background: var(--bg-1);
+      border: 1px solid var(--border-0);
+      border-radius: var(--r-lg);
+      font-size: 12px;
+      color: var(--text-1);
+      animation: popIn 0.18s var(--ease-out-expo);
     }
     .mini-row {
       display: flex;
       flex-wrap: wrap;
       align-items: center;
-      gap: 0.5rem;
+      gap: 8px;
     }
-    .mini-panel .mini-btn {
-      padding: 0.4rem 0.65rem;
-      border-radius: 10px;
-      font-size: 0.75rem;
-      font-weight: 600;
-      border: 1px solid rgba(148, 163, 184, 0.3);
-      background: rgba(30, 41, 59, 0.9);
-      color: #e2e8f0;
-      cursor: pointer;
+    .mini-controls { flex-wrap: nowrap; font-size: 11px; color: var(--text-2); }
+    .mini-controls label { display: inline-flex; align-items: center; gap: 6px; white-space: nowrap; }
+    .mini-status { display: flex; align-items: center; gap: 7px; font-size: 11px; color: var(--text-1); line-height: 1.5; }
+    .mini-status::before {
+      content: '';
+      width: 6px;
+      height: 6px;
+      border-radius: 50%;
+      background: var(--success);
+      flex-shrink: 0;
     }
-    .mini-panel .mini-btn.primary {
-      background: linear-gradient(90deg, #7c3aed, #0891b2);
-      border-color: transparent;
-      color: #ffffff;
+    .notice {
+      padding: 10px 12px;
+      border-radius: var(--r-md);
+      background: var(--warning-bg);
+      border: 1px solid var(--warning-border);
+      color: var(--text-1);
+      font-size: 11px;
+      line-height: 1.6;
     }
-    .mini-panel .mini-btn:disabled {
-      opacity: 0.55;
-      cursor: default;
-    }
-    .mini-panel .mini-select {
-      background: #0f172a;
-      color: #e2e8f0;
-      border: 1px solid #334155;
-      border-radius: 8px;
-      padding: 1px 2px;
-      font-size: 0.72rem;
-      line-height: 1.3;
-    }
-    .mini-panel .mini-textarea {
-      width: 100%;
-      border-radius: 10px;
-      padding: 6px 8px;
-      font-size: 12px;
-      background: rgba(15, 23, 42, 0.9);
-      border: 1px solid rgba(139, 92, 246, 0.45);
-      color: #e2e8f0;
-      resize: vertical;
-    }
-    .learned-chip {
+    .notice .btn { margin-top: 8px; }
+    .mini-load-text { font-family: var(--font-mono); font-size: 11px; color: var(--text-2); margin-top: 6px; }
+
+    /* Карточка загрузки (весов ещё нет): заголовок, «Что умеет» под спойлером, две кнопки */
+    .mini-load { padding: 12px 14px; }
+    .mini-progress { padding: 0 14px 12px; }
+    .mini-ready:not(.hidden) + .mini-progress { padding-top: 4px; }
+    .mini-load > * + * { margin-top: 10px; }
+    .mini-about summary {
       display: inline-flex;
       align-items: center;
       gap: 4px;
-      padding: 1px 4px 1px 7px;
-      border-radius: 9px;
-      background: rgba(139, 92, 246, 0.16);
-      border: 1px solid rgba(139, 92, 246, 0.45);
-      color: #ddd6fe;
-    }
-    .learned-chip button { color: #c4b5fd; padding: 0 3px; font-size: 11px; }
-    .mini-panel .mini-icon-btn {
-      margin-left: auto;
-      padding: 0.15rem 0.45rem;
-      border-radius: 8px;
-      border: 1px solid rgba(148, 163, 184, 0.25);
-      background: transparent;
-      color: #94a3b8;
-      font-size: 0.7rem;
+      font-size: 11px;
+      color: var(--text-2);
       cursor: pointer;
+      list-style: none;
+      user-select: none;
     }
-    .mini-reply-line + .mini-reply-line {
-      margin-top: 0.2rem;
+    .mini-about summary::-webkit-details-marker { display: none; }
+    .mini-about summary::after { content: '›'; transition: transform var(--transition); }
+    .mini-about[open] summary::after { transform: rotate(90deg); }
+    .mini-about summary:hover { color: var(--text-1); }
+    .mini-about p { margin-top: 6px; line-height: 1.6; }
+
+    /* Готовая модель: тонкая строка состояния, настройки раскрываются плавно */
+    .mini-bar {
+      display: flex;
+      align-items: center;
+      gap: 8px;
+      width: 100%;
+      min-height: 36px;
+      padding: 0 10px 0 12px;
+      background: transparent;
+      border: none;
+      border-radius: var(--r-lg);
+      color: var(--text-1);
+      text-align: left;
     }
-    .hidden {
-      display: none !important;
+    .mini-bar:hover { background: var(--bg-2); }
+    .mini-bar .mini-status {
+      display: block;
+      flex: 1;
+      min-width: 0;
+      position: relative;
+      padding-left: 13px;
+      overflow: hidden;
+      text-overflow: ellipsis;
+      white-space: nowrap;
+    }
+    .mini-bar .mini-status::before { position: absolute; left: 0; top: 50%; margin-top: -3px; }
+    .mini-chevron { color: var(--text-2); transition: transform 0.3s var(--ease-out-expo); }
+    .mini-ready.open .mini-chevron { transform: rotate(180deg); }
+    .mini-alert {
+      flex-shrink: 0;
+      padding: 1px 7px;
+      border-radius: 10px;
+      font-size: 10px;
+      font-weight: 500;
+      background: var(--warning-bg);
+      border: 1px solid var(--warning-border);
+      color: var(--warning);
+      white-space: nowrap;
+    }
+    .mini-collapse {
+      display: grid;
+      grid-template-rows: 0fr;
+      transition: grid-template-rows 0.3s var(--ease-out-expo);
+    }
+    .mini-ready.open .mini-collapse { grid-template-rows: 1fr; }
+    .mini-settings {
+      min-height: 0;
+      overflow: hidden;
+      visibility: hidden;                 /* свёрнутые настройки не ловят нажатия и Tab */
+      transition: visibility 0s linear 0.3s;
+    }
+    .mini-ready.open .mini-settings {
+      visibility: visible;
+      transition-delay: 0s;
+      max-height: min(60vh, 520px);
+      overflow-y: auto;
+    }
+    .mini-settings > * { margin: 0 12px 12px; }
+    .mini-settings > :first-child { margin-top: 4px; }
+    .mini-section { display: flex; flex-direction: column; gap: 8px; padding-top: 10px; border-top: 1px solid var(--border-1); }
+    .mini-learn-input { min-height: 56px; font-family: var(--font-sans); font-size: 12px; }
+    .mini-learn-row { flex-wrap: nowrap; align-items: flex-start; }
+    .mini-learn-row .subtle { line-height: 1.5; }
+    .learned-list { display: flex; flex-wrap: wrap; gap: 6px; }
+    .learned-chip {
+      display: inline-flex;
+      align-items: center;
+      gap: 2px;
+      height: 24px;
+      padding: 0 2px 0 9px;
+      border-radius: var(--r-md);
+      background: var(--bg-2);
+      border: 1px solid var(--border-0);
+      color: var(--text-0);
+      font-size: 11px;
+    }
+    .learned-chip button {
+      display: inline-flex;
+      align-items: center;
+      justify-content: center;
+      width: 20px;
+      height: 20px;
+      border: none;
+      border-radius: var(--r-sm);
+      background: transparent;
+      color: var(--text-2);
+    }
+    .learned-chip button:hover { background: var(--error-bg); color: var(--error); }
+    .learned-chip button .icon { width: 11px; height: 11px; }
+    .mini-footer { padding-top: 10px; border-top: 1px solid var(--border-1); }
+    .btn.danger-ghost { background: transparent; color: var(--text-1); height: 28px; font-size: 11px; }
+    .btn.danger-ghost:hover { background: var(--error-bg); border-color: var(--error-border); color: var(--error); }
+
+    /* Кнопка «Новый чат» в строке ввода */
+    .ghost-btn {
+      display: inline-flex;
+      align-items: center;
+      gap: 6px;
+      height: 30px;
+      padding: 0 10px 0 8px;
+      border: 1px solid transparent;
+      border-radius: 7px;
+      background: transparent;
+      color: var(--text-2);
+      font-size: 12px;
+      font-weight: 500;
+      white-space: nowrap;
+      transition: all var(--transition);
+    }
+    .ghost-btn:hover { background: var(--bg-2); border-color: var(--border-0); color: var(--text-0); }
+    .ghost-btn:active { transform: scale(0.97); }
+    .mini-load-text.error { font-family: var(--font-sans); color: var(--error); line-height: 1.6; }
+    @keyframes popIn {
+      from { opacity: 0; transform: translateY(-4px) scale(0.98); }
+      to { opacity: 1; transform: none; }
+    }
+
+    /* ===== ЛЕНТА СООБЩЕНИЙ ===== */
+    .chatlog {
+      flex: 1;
+      min-height: 0;
+      overflow-y: auto;
+      overflow-x: hidden;
+      padding: 20px 16px 16px;
+      -webkit-overflow-scrolling: touch;
+    }
+    @keyframes msgSlideIn {
+      from { opacity: 0; transform: translateY(6px); }
+      to { opacity: 1; transform: translateY(0); }
+    }
+    .msg {
+      position: relative;
+      padding: 12px 0;
+      animation: msgSlideIn 0.35s var(--ease-out-expo) both;
+    }
+    .msg + .msg::before {
+      content: '';
+      display: block;
+      height: 1px;
+      background: var(--border-1);
+      margin-bottom: 12px;
+    }
+    .msg .role {
+      display: flex;
+      align-items: center;
+      gap: 7px;
+      margin-bottom: 7px;
+      font-size: 10px;
+      font-weight: 600;
+      letter-spacing: 0.1em;
+      text-transform: uppercase;
+      color: var(--text-2);
+    }
+    .msg .role .icon { width: 11px; height: 11px; }
+    .role-tag {
+      padding: 0 6px;
+      border-radius: 8px;
+      border: 1px solid var(--border-0);
+      font-size: 9px;
+      letter-spacing: 0.06em;
+      color: var(--text-2);
+    }
+    .msg .bubble {
+      font-size: 14px;
+      line-height: 1.7;
+      color: var(--text-0);
+      overflow-wrap: anywhere;
+    }
+    /* Сообщение пользователя — только тонкая линия слева (разделитель над ним остаётся во всю ширину) */
+    .msg.user > .role, .msg.user > .bubble { padding-left: 14px; border-left: 2px solid var(--border-strong); }
+    .msg.user > .role { margin-bottom: 0; padding-bottom: 7px; color: var(--text-1); }
+    .msg.system .bubble { font-size: 13px; color: var(--text-1); line-height: 1.7; }
+    .msg.system .bubble p + p, .msg.system .bubble p + div { margin-top: 10px; }
+    .msg-meta {
+      display: flex;
+      flex-wrap: wrap;
+      gap: 4px 14px;
+      margin-top: 8px;
+      font-family: var(--font-mono);
+      font-size: 10.5px;
+      color: var(--text-2);
+    }
+    .legend { display: flex; flex-wrap: wrap; align-items: center; gap: 6px 14px; font-size: 11px; color: var(--text-2); }
+    .msg-meta .meta-accent { color: var(--warning); }
+    .learn-track { max-width: 360px; margin-top: 4px; }
+    .msg .learn-error { color: var(--error); font-size: 13px; }
+    .mini-reply-line + .mini-reply-line { margin-top: 0.2rem; }
+
+    /* «Рентген»: какие слова прошли цикл размышления, а какие — быстрый проход */
+    .token-pill-thought {
+      display: inline-flex;
+      align-items: baseline;
+      gap: 2px;
+      padding: 0 5px;
+      margin: 1px 0;
+      border-radius: var(--r-sm);
+      background: var(--think-bg);
+      border: 1px solid var(--think-border);
+      color: var(--text-0);
+      line-height: 1.6;
+    }
+    .token-pill-thought sup {
+      font-family: var(--font-mono);
+      font-size: 9px;
+      font-weight: 600;
+      color: var(--think-text);
+    }
+    .token-pill-fast {
+      display: inline-flex;
+      padding: 0 4px;
+      margin: 1px 0;
+      border-radius: var(--r-sm);
+      background: var(--fast-bg);
+      border: 1px solid var(--fast-border);
+      color: var(--text-1);
+      line-height: 1.6;
+    }
+
+    /* ===== НИЖНЯЯ ПАНЕЛЬ ВВОДА ===== */
+    .composer {
+      flex-shrink: 0;
+      padding: 0 16px 12px;
+      background: var(--bg-0);
+    }
+    .chip-scroll {
+      display: flex;
+      gap: 6px;
+      overflow-x: auto;
+      padding: 10px 0;
+      scroll-snap-type: x proximity;
+      -webkit-mask-image: linear-gradient(to right, #000 calc(100% - 28px), transparent);
+      mask-image: linear-gradient(to right, #000 calc(100% - 28px), transparent);
+    }
+    .chip-btn {
+      scroll-snap-align: start;
+      flex-shrink: 0;
+      white-space: nowrap;
+      height: 28px;
+      padding: 0 11px;
+      border-radius: var(--r-md);
+      border: 1px solid var(--border-0);
+      background: transparent;
+      color: var(--text-1);
+      font-size: 12px;
+      transition: all var(--transition);
+    }
+    .chip-btn:hover { background: var(--bg-2); border-color: var(--border-focus); color: var(--text-0); }
+    .chip-btn:active { transform: scale(0.97); }
+
+    .chat-input-wrapper {
+      display: flex;
+      flex-direction: column;
+      background: var(--bg-1);
+      border: 1px solid var(--border-0);
+      border-radius: var(--r-lg);
+      transition: border-color 0.2s ease, box-shadow 0.2s ease;
+    }
+    .chat-input-wrapper:focus-within { border-color: var(--border-focus); box-shadow: 0 0 0 3px var(--accent-dim); }
+    .chat-input-wrapper input {
+      width: 100%;
+      height: 46px;
+      padding: 0 16px;
+      background: transparent;
+      border: none;
+      outline: none;
+      font-size: 14px;
+      color: var(--text-0);
+    }
+    .chat-input-wrapper input::placeholder { color: var(--text-3); }
+    .chat-input-bar {
+      display: flex;
+      align-items: center;
+      gap: 4px;
+      padding: 5px 7px 5px 8px;
+      border-top: 1px solid var(--border-1);
+    }
+    .chat-input-bar .icon-btn { width: 30px; height: 30px; border-radius: 7px; }
+    .input-hint { flex: 1; font-size: 10px; color: var(--text-3); padding-left: 4px; letter-spacing: 0.02em; }
+    .send-btn {
+      display: inline-flex;
+      align-items: center;
+      justify-content: center;
+      gap: 6px;
+      height: 30px;
+      min-width: 38px;
+      padding: 0 12px;
+      border-radius: 7px;
+      border: none;
+      background: var(--text-0);
+      color: var(--bg-0);
+      font-size: 12px;
+      font-weight: 600;
+      transition: opacity var(--transition), transform var(--transition-spring);
+    }
+    .send-btn .icon { width: 14px; height: 14px; }
+    .send-btn:hover { opacity: 0.85; }
+    .send-btn:active { transform: scale(0.96); }
+    .send-btn .icon-stop, .send-btn.busy .icon-send { display: none; }
+    .send-btn.busy .icon-stop { display: block; }
+    .send-label:empty { display: none; }
+
+    /* ===== ВКЛАДКА «ДООБУЧЕНИЕ» ===== */
+    .page-head { display: flex; align-items: center; justify-content: space-between; gap: 10px; }
+    .page-title { font-size: 16px; font-weight: 600; letter-spacing: 0.01em; color: var(--text-0); }
+    .upload-row { display: flex; align-items: center; justify-content: space-between; gap: 12px; }
+    .grid2 { display: grid; grid-template-columns: 1fr 1fr; gap: 10px; }
+    .metric-value { font-family: var(--font-mono); font-size: 13px; font-weight: 600; color: var(--text-0); margin-top: 8px; }
+    .note { font-size: 11px; line-height: 1.6; color: var(--text-1); padding: 0 2px; }
+    .chart-box {
+      position: relative;
+      height: 150px;
+      margin-top: 10px;
+      border-radius: var(--r-md);
+      background: var(--bg-0);
+      border: 1px solid var(--border-1);
+      padding: 6px;
+    }
+    .chart-box canvas { display: block; width: 100%; height: 100%; }
+
+    /* ===== ВКЛАДКА «ЯДРО» ===== */
+    .stat-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 10px; }
+    .stat { background: var(--bg-1); border: 1px solid var(--border-0); border-radius: var(--r-lg); padding: 12px 14px; }
+    .stat-label { font-size: 10px; font-weight: 600; letter-spacing: 0.08em; text-transform: uppercase; color: var(--text-2); }
+    .stat-value { font-family: var(--font-mono); font-size: 18px; font-weight: 600; color: var(--text-0); margin-top: 6px; line-height: 1.3; }
+    .stat-hint { font-size: 11px; color: var(--text-2); margin-top: 2px; }
+    .matrix-box {
+      height: 180px;
+      margin-top: 12px;
+      border-radius: var(--r-md);
+      background: var(--bg-0);
+      border: 1px solid var(--border-1);
+      padding: 8px;
+      overflow: hidden;
+    }
+    .matrix-box canvas { display: block; width: 100%; height: 100%; }
+    .swatch { width: 10px; height: 10px; border-radius: 2px; display: inline-block; flex-shrink: 0; }
+    .swatch.plus { background: var(--text-0); }
+    .swatch.zero { background: var(--bg-3); border: 1px solid var(--border-0); }
+    .swatch.minus { background: var(--error); }
+    .legend-item { display: inline-flex; align-items: center; gap: 6px; font-family: var(--font-mono); font-size: 11px; color: var(--text-1); }
+
+    /* ===== УВЕДОМЛЕНИЕ ===== */
+    .toast {
+      position: fixed;
+      top: calc(52px + var(--safe-top));
+      left: 50%;
+      transform: translateX(-50%);
+      z-index: 200;
+      max-width: min(420px, calc(100vw - 32px));
+      padding: 9px 14px;
+      border-radius: var(--r-lg);
+      background: var(--bg-2);
+      border: 1px solid var(--border-0);
+      box-shadow: 0 16px 48px var(--shadow-lg);
+      font-size: 12px;
+      font-weight: 500;
+      color: var(--text-0);
+      text-align: center;
+      animation: toastIn 0.32s var(--ease-out-expo) both;
+    }
+    @keyframes toastIn {
+      from { opacity: 0; transform: translate(-50%, -6px) scale(0.97); }
+      to { opacity: 1; transform: translate(-50%, 0) scale(1); }
+    }
+
+    /* ===== ЗАСТАВКА ПРИ ЗАГРУЗКЕ ===== */
+    #welcomeScreen {
+      position: fixed;
+      inset: 0;
+      z-index: 9999;
+      background: var(--bg-0);
+      display: flex;
+      flex-direction: column;
+      align-items: center;
+      justify-content: center;
+      cursor: pointer;
+      user-select: none;
+      -webkit-user-select: none;
+      animation: welcomeFadeIn 0.4s ease forwards;
+    }
+    @keyframes welcomeFadeIn { from { opacity: 0; } to { opacity: 1; } }
+    @keyframes welcomeFadeOut {
+      from { opacity: 1; transform: scale(1); }
+      to { opacity: 0; transform: scale(1.015); }
+    }
+    #welcomeScreen.dismissing {
+      animation: welcomeFadeOut 0.35s var(--ease-out-expo) forwards;
+      pointer-events: none;
+    }
+    #welcomeMain {
+      font-size: clamp(2.6rem, 11vw, 6.5rem);
+      font-weight: 700;
+      letter-spacing: 0.04em;
+      color: var(--text-0);
+      line-height: 1;
+      text-align: center;
+      font-variant-numeric: tabular-nums;
+      text-shadow: 0 0 20px var(--welcome-glow-near), 0 0 60px var(--welcome-glow-far);
+      animation: welcomeMainRise 0.9s var(--ease-out-expo) both, welcomeLogoBreath 4.5s ease-in-out 0.9s infinite;
+    }
+    #welcomeSub {
+      margin-top: 20px;
+      font-family: var(--font-mono);
+      font-size: clamp(0.75rem, 3vw, 0.95rem);
+      color: var(--text-2);
+      letter-spacing: 0.03em;
+      text-align: center;
+      min-height: 1.5em;
+      max-width: min(480px, 80vw);
+      line-height: 1.5;
+      animation: welcomeSubRise 0.9s var(--ease-out-expo) 0.15s both;
+    }
+    #welcomeHint {
+      position: absolute;
+      bottom: calc(clamp(28px, 5vh, 48px) + var(--safe-bottom));
+      left: 50%;
+      transform: translateX(-50%);
+      font-size: 10px;
+      font-weight: 500;
+      letter-spacing: 0.1em;
+      text-transform: uppercase;
+      color: var(--text-3);
+      white-space: nowrap;
+      animation: welcomeHintBlink 2.4s ease-in-out infinite;
+    }
+    @keyframes welcomeHintBlink { 0%, 100% { opacity: 0.4; } 50% { opacity: 0.9; } }
+    @keyframes welcomeMainRise {
+      from { opacity: 0; transform: translateY(18px) scale(0.985); filter: blur(6px); letter-spacing: 0.08em; }
+      to { opacity: 1; transform: none; filter: blur(0); letter-spacing: 0.04em; }
+    }
+    @keyframes welcomeSubRise {
+      from { opacity: 0; transform: translateY(10px); }
+      to { opacity: 1; transform: none; }
+    }
+    @keyframes welcomeLogoBreath {
+      0%, 100% { text-shadow: 0 0 20px var(--welcome-glow-near), 0 0 60px var(--welcome-glow-far); }
+      50% { text-shadow: 0 0 28px var(--welcome-glow-near), 0 0 90px var(--welcome-glow-far); }
+    }
+
+    /* ===== ТЕЛЕФОН ===== */
+    @media (max-width: 767px) {
+      /* 16px в полях ввода — иначе iOS увеличивает страницу при фокусе */
+      input, textarea, select { font-size: 16px !important; }
+      .field-select.sm { font-size: 13px !important; }
+      .field-textarea { font-size: 12.5px !important; }
+      .status-bar { flex-wrap: wrap; row-gap: 2px; }
+      .status-text { order: 5; flex-basis: 100%; font-size: 10.5px; }
+      .chatlog { padding: 14px 16px 12px; }
+      .composer { padding-bottom: 10px; }
+      .input-hint { visibility: hidden; }
+      .upload-row { flex-direction: column; align-items: stretch; }
+    }
+
+    /* ===== КОМПЬЮТЕР: вкладки сверху, содержимое — колонкой по центру ===== */
+    @media (min-width: 768px) {
+      .tabbar {
+        order: 2;
+        display: flex;
+        justify-content: center;
+        gap: 4px;
+        height: 40px;
+        padding: 0 16px;
+        background: var(--bg-0);
+        border-top: none;
+        border-bottom: 1px solid var(--border-1);
+      }
+      .nav-item {
+        flex-direction: row;
+        gap: 7px;
+        height: 40px;
+        padding: 0 14px;
+        font-size: 12px;
+        font-weight: 450;
+        letter-spacing: 0.01em;
+        text-transform: none;
+      }
+      .nav-item .icon { width: 14px; height: 14px; }
+      .nav-item.active .icon { transform: none; }
+      .nav-item::after { bottom: -1px; left: 0; right: 0; width: auto; height: 1.5px; transform: scaleX(0); }
+      .nav-item.active::after { transform: scaleX(1); }
+      .chat-view { max-width: 860px; margin: 0 auto; border-left: 1px solid var(--border-1); border-right: 1px solid var(--border-1); }
+      .chatlog { padding: 28px 28px 20px; }
+      .mode-bar { padding: 0 28px; }
+      .mode-switch { display: flex; gap: 8px; }
+      .mode-btn { padding: 9px 14px 8px; }
+      .mini-panel { margin: 12px 28px 0; }
+      .composer { padding: 0 28px 16px; }
+      .stat-grid { grid-template-columns: repeat(4, 1fr); }
+      .page-inner { padding: 28px 28px 40px; }
+      .toast { top: calc(92px + var(--safe-top)); }
+    }
+
+    @media (prefers-reduced-motion: reduce) {
+      *, *::before, *::after {
+        animation-duration: 0.001ms !important;
+        animation-iteration-count: 1 !important;
+        transition-duration: 0.001ms !important;
+        scroll-behavior: auto !important;
+      }
     }
   </style>
 </head>
 <body>
-  <div class="app-shell">
-    <!-- ВЕРХНЯЯ ПАНЕЛЬ С ЖИВОЙ ТЕЛЕМЕТРИЕЙ ЯДРА -->
-    <header class="glass-header">
-      <div class="flex items-center justify-between gap-2">
-        <div class="flex items-center gap-2.5 min-w-0">
-          <div class="w-9 h-9 rounded-xl bg-gradient-to-br from-violet-600 to-cyan-500 flex items-center justify-center shadow-lg shadow-violet-500/20 shrink-0">
-            <span class="mono font-bold text-xs text-white tracking-tighter">b1.58</span>
-          </div>
-          <div class="min-w-0">
-            <div class="flex items-center gap-1.5">
-              <h1 class="font-bold text-sm sm:text-base text-white truncate">SLR-Net Когнитивное Ядро</h1>
-              <span class="w-2 h-2 rounded-full bg-emerald-400 pulse-dot shrink-0" title="Модель обучена и активна в памяти браузера"></span>
-            </div>
-            <p id="headerStatsText" class="text-[11px] text-slate-400 truncate mono">
-              Веса: {-1,0,+1} • 0 умножений • Память: 122 КБ
-            </p>
-          </div>
-        </div>
+  <!-- ЗАСТАВКА: пока загружается и обучается ядро. Исчезает сама или по нажатию -->
+  <div id="welcomeScreen" role="status" aria-label="Загрузка Singularity">
+    <div id="welcomeMain" data-value="Singularity">Singularity</div>
+    <div id="welcomeSub"></div>
+    <div id="welcomeHint">загрузка ядра</div>
+  </div>
+  <script>
+    (function initWelcome() {
+      const phrases = {
+        morning: [
+          "Доброе утро. Троичные веса проснулись.",
+          "Утренний прогрев слоёв Mamba…",
+          "Свежий день — свежие синапсы.",
+          "Кофе для людей, сложение для нейронов.",
+          "Ядро мышления выходит на связь."
+        ],
+        day: [
+          "Ноль умножений. Только сложение.",
+          "Веса {-1, 0, +1} на месте. Начинаем.",
+          "Всё считается прямо в этом браузере.",
+          "Маленькая модель, большие планы.",
+          "Роутер решает, где стоит подумать."
+        ],
+        evening: [
+          "Вечерний режим: тишина и логика.",
+          "Темнеет. Нейроны светятся ярче.",
+          "Цикл размышления прогревается…",
+          "Самое время поговорить по душам."
+        ],
+        night: [
+          "404: сон не найден. Зато есть собеседник.",
+          "Ночь. Только ты и троичные синапсы.",
+          "Нормальные модели спят. Эта — думает.",
+          "Глубокая ночь. Ядро не дремлет."
+        ]
+      };
+      const digits = "0123456789";
+      const screen = document.getElementById("welcomeScreen");
+      const mainEl = document.getElementById("welcomeMain");
+      const subEl = document.getElementById("welcomeSub");
+      const hintEl = document.getElementById("welcomeHint");
+      const started = Date.now();
+      let introDone = false;
 
-        <!-- Переключатель режима подсветки мыслей ("Рентген") -->
+      function phrase() {
+        const h = new Date().getHours();
+        const period = h >= 6 && h < 12 ? "morning" : h >= 12 && h < 18 ? "day" : h >= 18 ? "evening" : "night";
+        const list = phrases[period];
+        return list[Math.floor(Math.random() * list.length)];
+      }
+
+      // «Расшифровка»: буквы проступают слева направо сквозь бегущие цифры
+      function decode(el, target, speed, step, onDone) {
+        el.textContent = "0".repeat(target.length);
+        let iter = 0;
+        const iv = setInterval(() => {
+          el.textContent = target.split("").map((ch, i) =>
+            i < iter || ch === " " ? ch : digits[Math.floor(Math.random() * digits.length)]
+          ).join("");
+          if (iter >= target.length) { clearInterval(iv); if (onDone) onDone(); }
+          iter += step;
+        }, speed);
+      }
+
+      function dismiss() {
+        if (!screen.isConnected || screen.classList.contains("dismissing")) return;
+        screen.classList.add("dismissing");
+        const remove = () => screen.remove();
+        screen.addEventListener("animationend", remove, { once: true });
+        setTimeout(remove, 600);                 // если анимации отключены
+      }
+
+      function engineReady() {
+        try { return typeof appState !== "undefined" && appState.engine !== null && !appState.training; }
+        catch (e) { return false; }
+      }
+
+      screen.addEventListener("click", dismiss);
+      decode(mainEl, mainEl.dataset.value, 18, 0.2, () => {
+        decode(subEl, phrase(), 14, 0.6, () => { setTimeout(() => { introDone = true; }, 600); });
+      });
+      // Заставка уходит, когда ядро готово и надпись успела проявиться (не дольше 10 с в любом случае)
+      const poll = setInterval(() => {
+        const ready = engineReady();
+        if (ready) hintEl.textContent = "готово";
+        if ((ready && (introDone || Date.now() - started > 3500)) || Date.now() - started > 10000) {
+          clearInterval(poll);
+          dismiss();
+        }
+      }, 100);
+    })();
+  </script>
+
+  <div class="app-shell">
+    <!-- ВЕРХНЯЯ СТРОКА: название, состояние ядра, «Рентген», тема -->
+    <header class="status-bar">
+      <span class="brand">Singularity</span>
+      <span id="statusDot" class="status-dot working" title="Состояние ядра"></span>
+      <span id="headerStatsText" class="status-text">Загрузка ядра…</span>
+      <div class="status-actions">
         <button
           id="xrayToggleBtn"
           type="button"
-          class="px-2.5 py-1.5 rounded-lg text-xs font-semibold border transition-all shrink-0 flex items-center gap-1.5 bg-violet-500/20 border-violet-400/50 text-violet-200"
-          title="Показывать такты латентного цикла Coconut на каждом слове"
+          class="toggle-btn"
+          aria-pressed="false"
+          title="Показывать, сколько тактов размышления роутер дал каждому слову"
         >
-          <span>⚡ Рентген: ВКЛ</span>
+          <svg class="icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M3 7V5a2 2 0 0 1 2-2h2" /><path d="M17 3h2a2 2 0 0 1 2 2v2" /><path d="M21 17v2a2 2 0 0 1-2 2h-2" /><path d="M7 21H5a2 2 0 0 1-2-2v-2" /><circle cx="12" cy="12" r="1" /><path d="M18.944 12.33a1 1 0 0 0 0-.66 7.5 7.5 0 0 0-13.888 0 1 1 0 0 0 0 .66 7.5 7.5 0 0 0 13.888 0" /></svg>
+          <span>Рентген</span>
+          <span class="toggle-state">выкл</span>
+        </button>
+        <button id="themeToggle" type="button" class="icon-btn" title="Светлая / тёмная тема" aria-label="Переключить тему">
+          <svg class="icon theme-icon-sun" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><circle cx="12" cy="12" r="4" /><path d="M12 2v2" /><path d="M12 20v2" /><path d="m4.93 4.93 1.41 1.41" /><path d="m17.66 17.66 1.41 1.41" /><path d="M2 12h2" /><path d="M20 12h2" /><path d="m6.34 17.66-1.41 1.41" /><path d="m19.07 4.93-1.41 1.41" /></svg>
+          <svg class="icon theme-icon-moon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M12 3a6 6 0 0 0 9 9 9 9 0 1 1-9-9Z" /></svg>
         </button>
       </div>
     </header>
@@ -378,14 +1225,24 @@
       <div id="globalProgressFill"></div>
     </div>
 
-    <!-- УВЕДОМЛЕНИЕ (TOAST) ВМЕСТО БЛОКИРУЕМЫХ ALERT -->
-    <div
-      id="toastBanner"
-      class="hidden fixed top-16 left-1/2 -translate-x-1/2 z-50 max-w-[90vw] px-4 py-2.5 rounded-xl bg-slate-800/95 border border-cyan-400/40 text-xs font-medium text-cyan-100 shadow-2xl"
-    ></div>
+    <!-- ВКЛАДКИ: внизу на телефоне, сверху на компьютере -->
+    <nav class="tabbar" aria-label="Разделы">
+      <button id="navTabChat" type="button" class="nav-item active">
+        <svg class="icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M21 15a2 2 0 0 1-2 2H7l-4 4V5a2 2 0 0 1 2-2h14a2 2 0 0 1 2 2z" /></svg>
+        <span>Чат</span>
+      </button>
+      <button id="navTabTrain" type="button" class="nav-item">
+        <svg class="icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M21.42 10.922a1 1 0 0 0-.019-1.838L12.83 5.18a2 2 0 0 0-1.66 0L2.6 9.08a1 1 0 0 0 0 1.832l8.57 3.908a2 2 0 0 0 1.66 0z" /><path d="M22 10v6" /><path d="M6 12.5V16a6 3 0 0 0 12 0v-3.5" /></svg>
+        <span>Дообучение</span>
+      </button>
+      <button id="navTabCore" type="button" class="nav-item">
+        <svg class="icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><rect width="16" height="16" x="4" y="4" rx="2" /><rect width="6" height="6" x="9" y="9" rx="1" /><path d="M15 2v2" /><path d="M15 20v2" /><path d="M2 15h2" /><path d="M2 9h2" /><path d="M20 15h2" /><path d="M20 9h2" /><path d="M9 2v2" /><path d="M9 20v2" /></svg>
+        <span>Ядро</span>
+      </button>
+    </nav>
 
-    <!-- ВКЛАДКА 1: МОБИЛЬНЫЙ ЧАТ -->
-    <main id="tabChatView" class="main-viewport flex flex-col">
+    <!-- ВКЛАДКА 1: ЧАТ -->
+    <main id="tabChatView" class="view chat-view">
       <!-- Переключатель модели: обычная (поиск по памяти + логика) или mini (обученная генеративная LLM) -->
       <div class="mode-bar">
         <div class="mode-switch" role="tablist" aria-label="Какая модель отвечает">
@@ -398,400 +1255,387 @@
         </div>
       </div>
 
-      <!-- Панель mini: загрузка весов или настройки ответа -->
+      <!-- Панель mini. Пока весов нет — компактная карточка загрузки. Когда модель готова — одна тонкая строка
+           состояния; настройки, обучение и предупреждения раскрываются по нажатию (выбор запоминается). -->
       <div id="miniPanel" class="mini-panel hidden">
-        <div id="miniLoadBox" class="space-y-2">
-          <div class="leading-snug">
-            <b class="text-cyan-300">mini3</b> — генеративная модель-собеседник (36 млн параметров), которая
-            <b>умеет учиться</b>: объясните ей новое слово («Курдяпа — это маленькая птица…») — она сама задаст себе
-            вопросы, отрастит новые нейроны и запомнит навсегда, не трогая старые знания. Обучена на 2.3 ГБ русских
-            субтитров и дообучена вести диалог: отвечает коротко, помнит разговор, отвечает сразу на несколько
-            вопросов, честно говорит «не знаю». Веса (10.4 МБ) загружаются один раз и сохраняются в браузере.
+        <div id="miniLoadBox" class="mini-load">
+          <div>
+            <div class="card-title">mini3 — собеседник, который учится</div>
+            <div class="subtle">36 млн параметров · 10.4 МБ · скачивается один раз и хранится в браузере</div>
           </div>
+          <details class="mini-about">
+            <summary>Что умеет</summary>
+            <p>
+              Объясните ей новое слово («Курдяпа — это маленькая птица…») — она сама задаст себе вопросы, отрастит
+              новые нейроны и запомнит навсегда, не трогая старые знания. Обучена на 2.3 ГБ русских субтитров и
+              дообучена вести диалог: отвечает коротко, помнит разговор, отвечает сразу на несколько вопросов,
+              честно говорит «не знаю».
+            </p>
+          </details>
           <div class="mini-row">
-            <button id="miniDownloadBtn" type="button" class="mini-btn primary">⬇ Скачать mini3 с GitHub (10.4 МБ)</button>
-            <button id="miniPickBtn" type="button" class="mini-btn">📂 Выбрать файл .npz</button>
+            <button id="miniDownloadBtn" type="button" class="btn primary">
+              <svg class="icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4" /><polyline points="7 10 12 15 17 10" /><line x1="12" x2="12" y1="15" y2="3" /></svg>
+              Скачать mini3 с GitHub · 10.4 МБ
+            </button>
+            <button id="miniPickBtn" type="button" class="btn">
+              <svg class="icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="m6 14 1.5-2.9A2 2 0 0 1 9.24 10H20a2 2 0 0 1 1.94 2.5l-1.54 6a2 2 0 0 1-1.95 1.5H4a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h3.9a2 2 0 0 1 1.69.9l.81 1.2a2 2 0 0 0 1.67.9H18a2 2 0 0 1 2 2v2" /></svg>
+              Выбрать файл .npz
+            </button>
             <input id="miniFileInput" type="file" accept=".npz,application/octet-stream" class="hidden" />
           </div>
-          <div id="miniLoadProgress" class="hidden space-y-1" role="status" aria-live="polite">
-            <div class="progress-track"><div id="miniLoadFill" class="progress-fill"></div></div>
-            <div id="miniLoadText" class="mono text-[11px] text-slate-400"></div>
-          </div>
         </div>
-        <div id="miniReadyBox" class="hidden space-y-1">
-          <div id="miniStatusText" class="text-[11px] text-emerald-300 leading-snug">✅ mini готова</div>
-          <div id="miniUpdateBox" class="hidden mini-row text-[11px] text-amber-200 leading-snug">
-            В браузере сохранена старая версия собеседника. На GitHub есть новая — mini3: умеет учиться новому прямо в
-            браузере (объясните ей слово — она сама отрастит нейроны и запомнит).
-            <button id="miniUpdateBtn" type="button" class="mini-btn primary">⬇ Обновить (10.4 МБ)</button>
-          </div>
-          <div id="miniLearnBox" class="hidden space-y-1.5">
-            <div class="mini-row text-[11px] text-slate-400">
-              <button id="miniLearnToggleBtn" type="button" class="mini-btn">🧠 Научить</button>
-              <span>новому слову — сама отрастит нейроны и запомнит (или «/запомни …» в чате)</span>
-            </div>
-            <div id="miniLearnForm" class="hidden space-y-1">
-              <textarea id="miniLearnInput" rows="2" class="mini-textarea" placeholder="Курдяпа — это маленькая птица синего цвета. Она живёт в лесу."></textarea>
-              <div class="mini-row text-[10px] text-slate-500">
-                <button id="miniLearnGoBtn" type="button" class="mini-btn primary">Выучить</button>
-                <span>Формат: «Слово — это …», дальше можно добавить признаки (цвет, где живёт, размер). 1–5 минут; «Стоп» прерывает.</span>
+
+        <div id="miniReadyBox" class="mini-ready hidden">
+          <button id="miniPanelToggle" type="button" class="mini-bar" aria-expanded="false" aria-controls="miniSettings" title="Настройки mini">
+            <span id="miniStatusText" class="mini-status">mini готова</span>
+            <span id="miniAlertBadge" class="mini-alert hidden"></span>
+            <svg class="icon mini-chevron" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="m6 9 6 6 6-6" /></svg>
+          </button>
+          <div class="mini-collapse">
+            <div id="miniSettings" class="mini-settings">
+              <div id="miniUpdateBox" class="hidden notice">
+                В браузере сохранена старая версия собеседника. На GitHub есть новая — mini3: умеет учиться новому прямо
+                в браузере (объясните ей слово — она сама отрастит нейроны и запомнит).
+                <div><button id="miniUpdateBtn" type="button" class="btn primary">Обновить · 10.4 МБ</button></div>
+              </div>
+              <div id="miniUpgradeBox" class="hidden notice">
+                Загружена старая модель-продолжатель субтитров: она не отвечает на вопросы, а дописывает сцену.
+                <div><button id="miniUpgradeBtn" type="button" class="btn primary">Скачать собеседника</button></div>
+              </div>
+
+              <div id="miniLearnBox" class="mini-section hidden">
+                <label for="miniLearnInput" class="section-label">Научить новому слову</label>
+                <textarea id="miniLearnInput" rows="2" class="field-textarea mini-learn-input" placeholder="Курдяпа — это маленькая птица синего цвета. Она живёт в лесу."></textarea>
+                <div class="mini-row mini-learn-row">
+                  <button id="miniLearnGoBtn" type="button" class="btn primary">Выучить</button>
+                  <span class="subtle">«Слово — это …», можно добавить цвет, где живёт, размер. 1–5 минут, «Стоп» прерывает. Можно и «/запомни …» прямо в чате.</span>
+                </div>
+                <div class="section-label">Выучено</div>
+                <div id="miniModulesList" class="learned-list"></div>
+              </div>
+
+              <div class="mini-section">
+                <div class="section-label">Ответы</div>
+                <div class="mini-row mini-controls">
+                  <label id="miniLinesLabel">Реплик
+                    <select id="miniLinesSelect" class="field-select sm">
+                      <option value="1">1</option>
+                      <option value="2" selected>2</option>
+                      <option value="3">3</option>
+                      <option value="5">5</option>
+                    </select>
+                  </label>
+                  <label>Фантазия
+                    <select id="miniTempSelect" class="field-select sm">
+                      <option value="0.5">сдержанно</option>
+                      <option value="0.8" selected>обычно</option>
+                      <option value="1.0">смело</option>
+                    </select>
+                  </label>
+                </div>
+              </div>
+
+              <div class="mini-row mini-footer">
+                <button id="miniForgetBtn" type="button" class="btn danger-ghost" title="Удалить сохранённые веса из памяти браузера">
+                  <svg class="icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M3 6h18" /><path d="M19 6v14c0 1-1 2-2 2H7c-1 0-2-1-2-2V6" /><path d="M8 6V4c0-1 1-2 2-2h4c1 0 2 1 2 2v2" /><line x1="10" x2="10" y1="11" y2="17" /><line x1="14" x2="14" y1="11" y2="17" /></svg>
+                  Удалить веса из браузера
+                </button>
+                <span class="subtle">выученные слова останутся, веса придётся скачать заново</span>
               </div>
             </div>
-            <div class="text-[11px] text-slate-400 flex flex-wrap gap-1 items-center">
-              <span class="text-violet-300">Выучено:</span><span id="miniModulesList" class="flex flex-wrap gap-1"></span>
-            </div>
           </div>
-          <div id="miniUpgradeBox" class="hidden mini-row text-[11px] text-amber-200 leading-snug">
-            Загружена старая модель-продолжатель субтитров: она не отвечает на вопросы, а дописывает сцену.
-            <button id="miniUpgradeBtn" type="button" class="mini-btn primary">⬇ Скачать собеседника</button>
-          </div>
-          <div class="mini-row text-[11px] text-slate-400" style="flex-wrap: nowrap">
-            <label id="miniLinesLabel">Реплик в ответе
-              <select id="miniLinesSelect" class="mini-select">
-                <option value="1">1</option>
-                <option value="2" selected>2</option>
-                <option value="3">3</option>
-                <option value="5">5</option>
-              </select>
-            </label>
-            <label>Фантазия
-              <select id="miniTempSelect" class="mini-select">
-                <option value="0.5">сдержанно</option>
-                <option value="0.8" selected>обычно</option>
-                <option value="1.0">смело</option>
-              </select>
-            </label>
-            <button id="miniNewChatBtn" type="button" class="mini-icon-btn" title="Начать разговор заново (mini забудет, что вы говорили)" aria-label="Начать разговор заново">↺</button>
-            <button id="miniForgetBtn" type="button" class="mini-icon-btn" title="Удалить сохранённые веса из памяти браузера" aria-label="Удалить веса mini из памяти браузера">✕</button>
-          </div>
+        </div>
+        <!-- Прогресс скачивания/загрузки весов — виден и при первой загрузке, и при обновлении -->
+        <div id="miniLoadProgress" class="mini-progress hidden" role="status" aria-live="polite">
+          <div class="progress-track"><div id="miniLoadFill" class="progress-fill"></div></div>
+          <div id="miniLoadText" class="mini-load-text"></div>
         </div>
       </div>
 
       <!-- Лента сообщений -->
-      <div id="chatMessagesContainer" class="flex-1 overflow-y-auto px-3.5 py-4 space-y-3.5">
-        <!-- Приветственная карточка архитектуры -->
-        <div class="rounded-2xl p-3.5 bg-slate-900/90 border border-slate-800 text-xs text-slate-300 space-y-2 shadow-md">
-          <div class="flex items-center justify-between">
-            <span class="font-semibold text-cyan-300 flex items-center gap-1.5">
-              <span>🧠</span> Локальное ядро SLR-Net запущено в телефоне
-            </span>
-            <span id="welcomeSparsityBadge" class="mono text-[10px] px-2 py-0.5 rounded-md bg-emerald-500/15 text-emerald-300 border border-emerald-500/30">
-              ~30% нулей
-            </span>
+      <div id="chatMessagesContainer" class="chatlog">
+        <!-- Вводная карточка (остаётся при очистке чата) -->
+        <div class="msg system">
+          <div class="role">
+            <svg class="icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><circle cx="12" cy="12" r="10" /><path d="M12 16v-4" /><path d="M12 8h.01" /></svg>
+            <span>Ядро SLR-Net запущено локально</span>
+            <span id="welcomeSparsityBadge" class="badge success">~30% нулей</span>
           </div>
-          <p class="leading-relaxed text-slate-300">
-            Все вычисления идут прямо в вашем браузере, <b>без серверов</b> (интернет нужен только для загрузки шрифтов и стилей; без него страница тоже работает, но выглядит проще). Это поисковый чат-прототип: ответы берутся из памяти диалогов, а не сочиняются генеративной LLM. Все матрицы переведены в троичный код <code class="mono text-amber-300">{-1, 0, +1}</code> (только сложение и вычитание), контекст сжимается за <code class="mono text-cyan-300">O(1)</code>, а роутер включает цикл размышления <b>Coconut</b> только на сложных словах.
-          </p>
-          <div class="flex flex-wrap gap-2 pt-1 text-[11px]">
-            <span class="px-2 py-0.5 rounded bg-violet-500/20 border border-violet-500/40 text-violet-200">Фиолетовый = цикл мысли [3т]</span>
-            <span class="px-2 py-0.5 rounded bg-emerald-500/15 border border-emerald-500/30 text-emerald-200">Зелёный = быстрый проход [0т]</span>
+          <div class="bubble">
+            <p>
+              Все вычисления идут прямо в вашем браузере, <b>без серверов</b> — страница работает и без интернета.
+              Это поисковый чат-прототип: ответы берутся из памяти диалогов, а не сочиняются генеративной LLM.
+              Все матрицы переведены в троичный код <code>{-1, 0, +1}</code> (только сложение и вычитание), контекст
+              сжимается за <code>O(1)</code>, а роутер включает цикл размышления <b>Coconut</b> только на сложных словах.
+            </p>
+            <div class="legend">
+              <span><span class="token-pill-thought"><span>слово</span><sup>[3т]</sup></span> цикл размышления</span>
+              <span><span class="token-pill-fast">слово</span> быстрый проход</span>
+            </div>
           </div>
         </div>
       </div>
 
-      <!-- Горизонтальная лента быстрых кнопок-вопросов для удобного нажатия пальцем -->
-      <div class="border-t border-slate-800/80 bg-slate-950/70">
+      <!-- Подсказки-вопросы и строка ввода -->
+      <div class="composer">
         <div id="quickPromptsBar" class="chip-scroll no-scrollbar">
-          <button type="button" class="chip-btn" data-prompt="привет !">👋 Привет!</button>
-          <button type="button" class="chip-btn" data-prompt="Как думаешь, мы сможем починить этот двигатель до рассвета?">🎬 Сцена из субтитров</button>
-          <button type="button" class="chip-btn" data-prompt="В чём метод Шерлока Холмса?">🕵️ Метод Холмса</button>
-          <button type="button" class="chip-btn" data-prompt="Если сокол быстрее орла, а орёл быстрее воробья, кто самый медленный?">🧩 Тест логики (новый)</button>
-          <button type="button" class="chip-btn" data-prompt="Сколько будет двадцать пять умножить на четыре минус пятнадцать?">🔢 Тест счёта (25*4-15)</button>
-          <button type="button" class="chip-btn" data-prompt="Какая столица у государства Мадагаскар?">❓ Вопрос, которого нет в базе</button>
-          <button type="button" class="chip-btn" data-prompt="давай просто поговорим по душам">💬 Поговорить по душам</button>
-          <button type="button" class="chip-btn" data-prompt="мне сегодня немного грустно и одиноко">☕ Мне сегодня грустно</button>
-          <button type="button" class="chip-btn" data-prompt="в чём смысл жизни по книге льва толстого круг чтения ?">📖 Толстой о смысле жизни</button>
-          <button type="button" class="chip-btn" data-prompt="о чём стихотворение в прозе тургенева разговор ?">🏔️ Тургенев «Разговор»</button>
-          <button type="button" class="chip-btn" data-prompt="о чём юмористический рассказ чехова разговор ?">🎭 Чехов «Разговор»</button>
-          <button type="button" class="chip-btn" data-prompt="расскажи удивительный факт о вселенной">✨ Факт о Вселенной</button>
-          <button type="button" class="chip-btn" data-prompt="расскажи мне шутку или что-нибудь весёлое">😄 Шутка</button>
-          <button type="button" class="chip-btn" data-prompt="почему небо синее ?">🌌 Почему небо синее?</button>
-          <button type="button" class="chip-btn" data-prompt="зачем нужны троичные веса ?">⚡ Зачем троичные веса?</button>
-          <button type="button" class="chip-btn" data-prompt="почему лёд не тонет в воде ?">🧊 Почему лёд не тонет?</button>
-          <button type="button" class="chip-btn" data-prompt="что быстрее свет или звук ?">🌩️ Свет или звук?</button>
-          <button type="button" class="chip-btn" data-prompt="как ты работаешь ?">⚙️ Как ты работаешь?</button>
-          <button type="button" class="chip-btn" data-prompt="почему трава зелёная ?">🌿 Почему трава зелёная?</button>
-          <button type="button" class="chip-btn" data-prompt="что такое гравитация ?">🪐 Что такое гравитация?</button>
-          <button type="button" class="chip-btn" data-prompt="почему зимой холодно ?">❄️ Почему зимой холодно?</button>
-          <button type="button" class="chip-btn" data-prompt="сколько будет два плюс два ?">🔢 2 + 2 = ?</button>
+          <button type="button" class="chip-btn" data-prompt="привет !">Привет!</button>
+          <button type="button" class="chip-btn" data-prompt="Как думаешь, мы сможем починить этот двигатель до рассвета?">Сцена из субтитров</button>
+          <button type="button" class="chip-btn" data-prompt="В чём метод Шерлока Холмса?">Метод Холмса</button>
+          <button type="button" class="chip-btn" data-prompt="Если сокол быстрее орла, а орёл быстрее воробья, кто самый медленный?">Задача на логику</button>
+          <button type="button" class="chip-btn" data-prompt="Сколько будет двадцать пять умножить на четыре минус пятнадцать?">Счёт: 25 × 4 − 15</button>
+          <button type="button" class="chip-btn" data-prompt="Какая столица у государства Мадагаскар?">Вопрос, которого нет в базе</button>
+          <button type="button" class="chip-btn" data-prompt="давай просто поговорим по душам">Поговорить по душам</button>
+          <button type="button" class="chip-btn" data-prompt="мне сегодня немного грустно и одиноко">Мне сегодня грустно</button>
+          <button type="button" class="chip-btn" data-prompt="в чём смысл жизни по книге льва толстого круг чтения ?">Толстой о смысле жизни</button>
+          <button type="button" class="chip-btn" data-prompt="о чём стихотворение в прозе тургенева разговор ?">Тургенев «Разговор»</button>
+          <button type="button" class="chip-btn" data-prompt="о чём юмористический рассказ чехова разговор ?">Чехов «Разговор»</button>
+          <button type="button" class="chip-btn" data-prompt="расскажи удивительный факт о вселенной">Факт о Вселенной</button>
+          <button type="button" class="chip-btn" data-prompt="расскажи мне шутку или что-нибудь весёлое">Шутка</button>
+          <button type="button" class="chip-btn" data-prompt="почему небо синее ?">Почему небо синее?</button>
+          <button type="button" class="chip-btn" data-prompt="зачем нужны троичные веса ?">Зачем троичные веса?</button>
+          <button type="button" class="chip-btn" data-prompt="почему лёд не тонет в воде ?">Почему лёд не тонет?</button>
+          <button type="button" class="chip-btn" data-prompt="что быстрее свет или звук ?">Свет или звук?</button>
+          <button type="button" class="chip-btn" data-prompt="как ты работаешь ?">Как ты работаешь?</button>
+          <button type="button" class="chip-btn" data-prompt="почему трава зелёная ?">Почему трава зелёная?</button>
+          <button type="button" class="chip-btn" data-prompt="что такое гравитация ?">Что такое гравитация?</button>
+          <button type="button" class="chip-btn" data-prompt="почему зимой холодно ?">Почему зимой холодно?</button>
+          <button type="button" class="chip-btn" data-prompt="сколько будет два плюс два ?">2 + 2 = ?</button>
         </div>
         <!-- Быстрые реплики для mini-собеседника -->
         <div id="miniChatPromptsBar" class="chip-scroll no-scrollbar hidden">
-          <button type="button" class="chip-btn" data-prompt="Привет! Как тебя зовут?">👋 Привет! Как тебя зовут?</button>
-          <button type="button" class="chip-btn" data-prompt="/запомни Курдяпа — это маленькая птица синего цвета. Она живёт в лесу.">🧠 Научить: курдяпа</button>
-          <button type="button" class="chip-btn" data-prompt="Что такое курдяпа?">❓ Что такое курдяпа?</button>
-          <button type="button" class="chip-btn" data-prompt="Что ты умеешь?">🤖 Что ты умеешь?</button>
-          <button type="button" class="chip-btn" data-prompt="Меня зовут Аня.">🙋 Меня зовут Аня.</button>
-          <button type="button" class="chip-btn" data-prompt="Как меня зовут?">❓ Как меня зовут?</button>
-          <button type="button" class="chip-btn" data-prompt="Почему небо голубое?">🌤 Почему небо голубое?</button>
-          <button type="button" class="chip-btn" data-prompt="Какой день идёт после пятницы?">🗓 Что после пятницы?</button>
-          <button type="button" class="chip-btn" data-prompt="Какая столица Франции?">🗼 Столица Франции?</button>
-          <button type="button" class="chip-btn" data-prompt="Мне грустно.">😔 Мне грустно</button>
-          <button type="button" class="chip-btn" data-prompt="Расскажи анекдот.">😄 Расскажи анекдот</button>
-          <button type="button" class="chip-btn" data-prompt="Посоветуй фильм.">🎬 Посоветуй фильм</button>
-          <button type="button" class="chip-btn" data-prompt="Какая сегодня погода?">☔ Какая погода?</button>
+          <button type="button" class="chip-btn" data-prompt="Привет! Как тебя зовут?">Привет! Как тебя зовут?</button>
+          <button type="button" class="chip-btn" data-prompt="/запомни Курдяпа — это маленькая птица синего цвета. Она живёт в лесу.">Научить: курдяпа</button>
+          <button type="button" class="chip-btn" data-prompt="Что такое курдяпа?">Что такое курдяпа?</button>
+          <button type="button" class="chip-btn" data-prompt="Что ты умеешь?">Что ты умеешь?</button>
+          <button type="button" class="chip-btn" data-prompt="Меня зовут Аня.">Меня зовут Аня.</button>
+          <button type="button" class="chip-btn" data-prompt="Как меня зовут?">Как меня зовут?</button>
+          <button type="button" class="chip-btn" data-prompt="Почему небо голубое?">Почему небо голубое?</button>
+          <button type="button" class="chip-btn" data-prompt="Какой день идёт после пятницы?">Что после пятницы?</button>
+          <button type="button" class="chip-btn" data-prompt="Какая столица Франции?">Столица Франции?</button>
+          <button type="button" class="chip-btn" data-prompt="Мне грустно.">Мне грустно</button>
+          <button type="button" class="chip-btn" data-prompt="Расскажи анекдот.">Расскажи анекдот</button>
+          <button type="button" class="chip-btn" data-prompt="Посоветуй фильм.">Посоветуй фильм</button>
+          <button type="button" class="chip-btn" data-prompt="Какая сегодня погода?">Какая погода?</button>
         </div>
         <!-- Быстрые реплики для старой модели-продолжателя: она дописывает диалог в стиле субтитров -->
         <div id="miniQuickPromptsBar" class="chip-scroll no-scrollbar hidden">
-          <button type="button" class="chip-btn" data-prompt="Привет! Как дела?">👋 Привет! Как дела?</button>
-          <button type="button" class="chip-btn" data-prompt="Где ты был всю ночь?">🌙 Где ты был всю ночь?</button>
-          <button type="button" class="chip-btn" data-prompt="Доктор, что с ним?">🩺 Доктор, что с ним?</button>
-          <button type="button" class="chip-btn" data-prompt="Я тебя люблю.">❤️ Я тебя люблю.</button>
-          <button type="button" class="chip-btn" data-prompt="Мы должны уходить, сейчас же!">🏃 Уходим, сейчас же!</button>
-          <button type="button" class="chip-btn" data-prompt="Расскажи мне, что случилось.">❓ Что случилось?</button>
-          <button type="button" class="chip-btn" data-prompt="Капитан, корабль готов к отплытию.">⚓ Капитан, корабль готов</button>
-          <button type="button" class="chip-btn" data-prompt="Почему ты мне не сказал?">😠 Почему ты не сказал?</button>
-          <button type="button" class="chip-btn" data-prompt="Кто здесь?">🔦 Кто здесь?</button>
-          <button type="button" class="chip-btn" data-prompt="Спасибо, что пришёл.">🙏 Спасибо, что пришёл</button>
+          <button type="button" class="chip-btn" data-prompt="Привет! Как дела?">Привет! Как дела?</button>
+          <button type="button" class="chip-btn" data-prompt="Где ты был всю ночь?">Где ты был всю ночь?</button>
+          <button type="button" class="chip-btn" data-prompt="Доктор, что с ним?">Доктор, что с ним?</button>
+          <button type="button" class="chip-btn" data-prompt="Я тебя люблю.">Я тебя люблю.</button>
+          <button type="button" class="chip-btn" data-prompt="Мы должны уходить, сейчас же!">Уходим, сейчас же!</button>
+          <button type="button" class="chip-btn" data-prompt="Расскажи мне, что случилось.">Что случилось?</button>
+          <button type="button" class="chip-btn" data-prompt="Капитан, корабль готов к отплытию.">Капитан, корабль готов</button>
+          <button type="button" class="chip-btn" data-prompt="Почему ты мне не сказал?">Почему ты не сказал?</button>
+          <button type="button" class="chip-btn" data-prompt="Кто здесь?">Кто здесь?</button>
+          <button type="button" class="chip-btn" data-prompt="Спасибо, что пришёл.">Спасибо, что пришёл</button>
         </div>
 
-        <!-- Нижняя строка ввода сообщения -->
-        <form id="chatInputForm" class="px-3 pb-2.5 pt-1 flex items-center gap-2">
-          <button
-            id="clearChatBtn"
-            type="button"
-            class="w-10 h-10 rounded-xl bg-slate-800/90 hover:bg-slate-700 text-slate-300 flex items-center justify-center shrink-0 border border-slate-700/70"
-            title="Очистить историю чата"
-          >
-            🗑️
-          </button>
+        <!-- Строка ввода сообщения -->
+        <form id="chatInputForm" class="chat-input-wrapper">
           <input
             id="chatInputField"
             type="text"
             autocomplete="off"
+            enterkeyhint="send"
             placeholder="Напишите вопрос на русском..."
-            class="flex-1 min-w-0 h-11 px-3.5 rounded-xl bg-slate-900 border border-slate-700/80 text-white placeholder-slate-500 focus:outline-none focus:border-cyan-400"
+            aria-label="Сообщение"
           />
-          <button
-            id="sendMsgBtn"
-            type="submit"
-            class="h-11 px-4 rounded-xl bg-gradient-to-r from-violet-600 to-cyan-500 text-white font-semibold text-sm shadow-md shadow-cyan-500/20 active:scale-95 transition-transform shrink-0 flex items-center gap-1"
-          >
-            <span>Отпр.</span>
-            <span>➤</span>
-          </button>
+          <div class="chat-input-bar">
+            <!-- Одна кнопка на всё: очищает ленту и память модели (что ей говорили в этом разговоре) -->
+            <button id="clearChatBtn" type="button" class="ghost-btn" title="Новый чат: очистить ленту и память модели о разговоре">
+              <svg class="icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M21 15a2 2 0 0 1-2 2H7l-4 4V5a2 2 0 0 1 2-2h14a2 2 0 0 1 2 2z" /><path d="M12 7v6" /><path d="M9 10h6" /></svg>
+              <span>Новый чат</span>
+            </button>
+            <span class="input-hint">Enter — отправить</span>
+            <button id="sendMsgBtn" type="submit" class="send-btn" aria-label="Отправить">
+              <svg class="icon icon-send" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="m5 12 7-7 7 7" /><path d="M12 19V5" /></svg>
+              <svg class="icon icon-stop" viewBox="0 0 24 24" fill="currentColor" stroke="none" aria-hidden="true"><rect width="14" height="14" x="5" y="5" rx="2" /></svg>
+              <span class="send-label"></span>
+            </button>
+          </div>
         </form>
       </div>
     </main>
 
     <!-- ВКЛАДКА 2: ДООБУЧЕНИЕ НЕЙРОСЕТИ ПРЯМО В ТЕЛЕФОНЕ -->
-    <section id="tabTrainView" class="main-viewport hidden p-4 space-y-4">
-      <div class="rounded-2xl p-4 bg-slate-900/90 border border-slate-800 space-y-3">
-        <div class="flex items-center justify-between">
-          <h2 class="font-bold text-sm text-white flex items-center gap-2">
-            <span>🎓</span> Тренажёр троичного ядра (STE + AdamW)
-          </h2>
-          <span id="trainStatusBadge" class="mono text-[11px] px-2 py-0.5 rounded bg-cyan-500/20 text-cyan-300 border border-cyan-500/30">
-            Готов
-          </span>
+    <section id="tabTrainView" class="view page hidden">
+      <div class="page-inner">
+        <div class="page-head">
+          <h2 class="page-title">Тренажёр троичного ядра</h2>
+          <span id="trainStatusBadge" class="badge">Готов</span>
         </div>
-        <p class="text-xs text-slate-400 leading-relaxed">
-          Добавьте любую новую фразу или пару <code class="text-cyan-300">вопрос ? ответ .</code> в корпус ниже и нажмите <b>«Дообучить модель»</b>. Прямо в браузере телефона пройдёт градиентное обучение со Straight-Through Estimator и квантованием весов в <code class="text-amber-300">{-1, 0, +1}</code>.
+        <p class="muted">
+          Добавьте любую новую фразу или пару <code>вопрос ? ответ .</code> в корпус ниже и нажмите
+          <b>«Переобучить»</b>. Прямо в браузере пройдёт градиентное обучение (STE + AdamW) с квантованием весов в
+          <code>{-1, 0, +1}</code>.
         </p>
-        <p class="text-[11px] text-slate-500 leading-relaxed">
-          Здесь дообучается <b>«Обычная»</b> модель. Модель <b>mini</b> обучена на компьютере (<code>train_lm.py</code>, 2.3 ГБ субтитров, 6 часов) — в браузере она только отвечает.
+        <p class="subtle">
+          Здесь дообучается <b>«Обычная»</b> модель. Модель <b>mini</b> обучена на компьютере (<code>train_lm.py</code>,
+          2.3 ГБ субтитров, 6 часов) — в браузере она только отвечает.
         </p>
 
-        <!-- Быстрое добавление одного правила/факта -->
-        <div class="p-3 rounded-xl bg-slate-950/80 border border-cyan-500/30 space-y-2">
-          <div class="flex items-center justify-between gap-2">
-            <div>
-              <div class="text-xs font-semibold text-cyan-300">📂 Загрузить файл субтитров (.txt / .srt)</div>
-              <div class="text-[11px] text-slate-400">Автоочистка таймкодов и склейка диалогов. Файл любого размера читается по частям (UTF-8 или Windows-1251); из большого файла для обучения в браузере берётся случайная выборка диалогов.</div>
+        <!-- Загрузка файла субтитров -->
+        <div class="card upload-row">
+          <div>
+            <div class="card-title">Файл субтитров (.txt / .srt)</div>
+            <div class="subtle" style="margin-top: 4px">
+              Таймкоды убираются, реплики склеиваются в диалоги. Файл любого размера читается по частям (UTF-8 или
+              Windows-1251); из большого файла для обучения в браузере берётся случайная выборка диалогов.
             </div>
-            <label for="subtitleFileInput" class="px-3 py-2 rounded-lg bg-cyan-600 hover:bg-cyan-500 text-white font-semibold text-xs cursor-pointer shrink-0">
-              Выбрать .txt/.srt
-            </label>
-            <input id="subtitleFileInput" type="file" accept=".txt,.srt,text/plain" class="hidden" />
           </div>
+          <label for="subtitleFileInput" class="btn" style="flex-shrink: 0">
+            <svg class="icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4" /><polyline points="17 8 12 3 7 8" /><line x1="12" x2="12" y1="3" y2="15" /></svg>
+            Выбрать файл
+          </label>
+          <input id="subtitleFileInput" type="file" accept=".txt,.srt,text/plain" class="hidden" />
         </div>
 
         <!-- Прогресс чтения файла и обучения -->
-        <div id="trainProgressBox" class="hidden p-3 rounded-xl bg-slate-950/80 border border-violet-500/40 space-y-2" role="status" aria-live="polite">
-          <div class="flex items-center justify-between gap-2">
-            <div id="trainProgressPhase" class="text-xs font-semibold text-violet-200">Подготовка…</div>
-            <button id="trainCancelBtn" type="button" class="px-2.5 py-1 rounded-lg bg-slate-800 border border-slate-600 text-[11px] text-slate-200 shrink-0">
-              Остановить
-            </button>
+        <div id="trainProgressBox" class="card hidden" role="status" aria-live="polite">
+          <div class="row" style="justify-content: space-between; flex-wrap: nowrap">
+            <div id="trainProgressPhase" class="card-title" style="font-size: 12px">Подготовка…</div>
+            <button id="trainCancelBtn" type="button" class="btn" style="height: 26px; font-size: 11px">Остановить</button>
           </div>
-          <div class="progress-track"><div id="trainProgressFill" class="progress-fill"></div></div>
-          <div id="trainProgressText" class="mono text-[11px] text-slate-400">0%</div>
+          <div class="progress-track" style="margin-top: 10px"><div id="trainProgressFill" class="progress-fill"></div></div>
+          <div id="trainProgressText" class="mini-load-text">0%</div>
         </div>
-        <div id="trainResultNote" class="hidden text-[11px] text-slate-400 leading-relaxed"></div>
+        <div id="trainResultNote" class="note hidden"></div>
 
-        <div class="p-3 rounded-xl bg-slate-950/80 border border-slate-800 space-y-2">
-          <label for="newFactInput" class="block text-xs font-semibold text-slate-300">
-            Быстро добавить новое знание или ответ:
-          </label>
-          <div class="flex gap-2">
+        <!-- Быстрое добавление одного факта -->
+        <div class="card">
+          <label for="newFactInput" class="section-label">Новое знание или ответ</label>
+          <div class="row" style="margin-top: 10px; flex-wrap: nowrap">
             <input
               id="newFactInput"
               type="text"
+              class="field-input grow"
               placeholder="кто тебя создал ? меня создали как сверхэкономную сеть ."
-              class="flex-1 min-w-0 h-10 px-3 rounded-lg bg-slate-900 border border-slate-700 text-white text-xs"
             />
-            <button
-              id="addFactAndTrainBtn"
-              type="button"
-              class="px-3 h-10 rounded-lg bg-emerald-600 hover:bg-emerald-500 text-white font-semibold text-xs shrink-0"
-            >
-              + В память
+            <button id="addFactAndTrainBtn" type="button" class="btn primary" style="height: 34px">
+              <svg class="icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M5 12h14" /><path d="M12 5v14" /></svg>
+              В память
             </button>
           </div>
         </div>
 
         <!-- Полный редактируемый корпус -->
-        <div class="space-y-1.5">
-          <div class="flex items-center justify-between text-xs">
-            <label for="corpusTextarea" class="font-semibold text-slate-300">Обучающий корпус (по 1 цепочке на строку):</label>
-            <span id="corpusLinesCount" class="mono text-slate-400">15 цепочек</span>
+        <div class="card">
+          <div class="section-label">
+            <label for="corpusTextarea">Обучающий корпус · по цепочке на строку</label>
+            <span id="corpusLinesCount" class="badge">15 цепочек</span>
           </div>
-          <textarea
-            id="corpusTextarea"
-            rows="7"
-            class="w-full p-3 rounded-xl bg-slate-950 border border-slate-800 text-xs text-slate-200 mono leading-relaxed focus:outline-none focus:border-cyan-400"
-          ></textarea>
+          <textarea id="corpusTextarea" rows="8" class="field-textarea" style="margin-top: 10px"></textarea>
         </div>
 
-        <!-- Настройки эпох и кнопка запуска -->
-        <div class="grid grid-cols-2 gap-2.5 pt-1">
-          <div class="p-2.5 rounded-xl bg-slate-950 border border-slate-800">
-            <label for="epochsSelect" class="block text-[11px] text-slate-400 mb-1">Циклов обучения (Эпох):</label>
-            <select id="epochsSelect" class="w-full bg-slate-900 text-white text-xs rounded-lg p-1.5 border border-slate-700">
-              <option value="10">10 эпох (быстро)</option>
-              <option value="20" selected>20 эпох</option>
-              <option value="35">35 эпох (точнее, дольше)</option>
+        <!-- Настройки эпох и метрики -->
+        <div class="grid2">
+          <div class="card">
+            <label for="epochsSelect" class="section-label">Эпох обучения</label>
+            <select id="epochsSelect" class="field-select" style="margin-top: 10px">
+              <option value="10">10 — быстро</option>
+              <option value="20" selected>20</option>
+              <option value="35">35 — точнее, дольше</option>
             </select>
           </div>
-          <div class="p-2.5 rounded-xl bg-slate-950 border border-slate-800">
-            <div class="text-[11px] text-slate-400 mb-1">Точность сети (без подсказки) / Loss:</div>
-            <div id="liveTrainMetrics" class="mono text-xs font-bold text-emerald-400 pt-1">
-              — 
-            </div>
+          <div class="card">
+            <div class="section-label">Точность / Loss</div>
+            <div id="liveTrainMetrics" class="metric-value">—</div>
           </div>
         </div>
 
-        <div class="flex gap-2 pt-1">
-          <button
-            id="runBrowserTrainBtn"
-            type="button"
-            class="flex-1 h-11 rounded-xl bg-gradient-to-r from-violet-600 to-cyan-500 text-white font-semibold text-xs shadow-lg shadow-violet-500/20 active:scale-95 transition-transform"
-          >
-            🚀 Переобучить троичное ядро в браузере
+        <div class="row" style="flex-wrap: nowrap">
+          <button id="runBrowserTrainBtn" type="button" class="btn primary lg grow">
+            <svg class="icon" viewBox="0 0 24 24" fill="currentColor" stroke="none" aria-hidden="true"><polygon points="6 3 20 12 6 21 6 3" /></svg>
+            Переобучить троичное ядро
           </button>
-          <button
-            id="resetCorpusBtn"
-            type="button"
-            class="px-3 h-11 rounded-xl bg-slate-800 text-slate-300 text-xs font-medium border border-slate-700"
-            title="Вернуть стартовый корпус"
-          >
+          <button id="resetCorpusBtn" type="button" class="btn lg" title="Вернуть стартовый корпус">
+            <svg class="icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M3 12a9 9 0 1 0 9-9 9.75 9.75 0 0 0-6.74 2.74L3 8" /><path d="M3 3v5h5" /></svg>
             Сброс
           </button>
         </div>
-      </div>
 
-      <!-- График сходимости ошибки (Loss) -->
-      <div class="rounded-2xl p-4 bg-slate-900/90 border border-slate-800 space-y-2">
-        <div class="flex items-center justify-between">
-          <h3 class="text-xs font-semibold text-slate-300">График падения ошибки (Loss) по эпохам</h3>
-          <span id="trainTimeLabel" class="mono text-[11px] text-cyan-400"></span>
-        </div>
-        <div class="relative h-36 w-full bg-slate-950 rounded-xl border border-slate-800 p-2">
-          <canvas id="lossChartCanvas" class="w-full h-full block"></canvas>
+        <!-- График сходимости ошибки (Loss) -->
+        <div class="card">
+          <div class="section-label">
+            <span>Ошибка (Loss) по эпохам</span>
+            <span id="trainTimeLabel" class="mono" style="letter-spacing: 0; text-transform: none"></span>
+          </div>
+          <div class="chart-box"><canvas id="lossChartCanvas"></canvas></div>
         </div>
       </div>
     </section>
 
     <!-- ВКЛАДКА 3: РЕНТГЕН ТРОИЧНОГО ЯДРА И ПАМЯТИ -->
-    <section id="tabCoreView" class="main-viewport hidden p-4 space-y-4">
-      <!-- Сводные карточки экономии -->
-      <div class="grid grid-cols-2 gap-2.5">
-        <div class="p-3 rounded-2xl bg-slate-900/90 border border-slate-800">
-          <div class="text-[11px] text-slate-400">Разреженность (Нули)</div>
-          <div id="statSparsityVal" class="mono text-lg font-bold text-emerald-400 mt-0.5">29.8%</div>
-          <div class="text-[10px] text-slate-500 mt-0.5">Синапсов физически отключено</div>
+    <section id="tabCoreView" class="view page hidden">
+      <div class="page-inner">
+        <div class="page-head">
+          <h2 class="page-title">Ядро b1.58</h2>
         </div>
-        <div class="p-3 rounded-2xl bg-slate-900/90 border border-slate-800">
-          <div class="text-[11px] text-slate-400">Умножений весов (MUL)</div>
-          <div class="mono text-lg font-bold text-cyan-400 mt-0.5">0 операций</div>
-          <div class="text-[10px] text-slate-500 mt-0.5">Только сложение и вычитание</div>
-        </div>
-        <div class="p-3 rounded-2xl bg-slate-900/90 border border-slate-800">
-          <div class="text-[11px] text-slate-400">Словарь и ячейки фактов</div>
-          <div id="statVocabAndMemVal" class="mono text-base font-bold text-violet-300 mt-0.5">225 слов / 30 яч.</div>
-          <div class="text-[10px] text-slate-500 mt-0.5">Индекс внешней памяти O(1)</div>
-        </div>
-        <div class="p-3 rounded-2xl bg-slate-900/90 border border-slate-800">
-          <div class="text-[11px] text-slate-400">Вес упакованного ядра</div>
-          <div id="statPackedSizeVal" class="mono text-base font-bold text-amber-300 mt-0.5">48.2 КБ</div>
-          <div class="text-[10px] text-slate-500 mt-0.5">По 5 тритов в 1 байте</div>
-        </div>
-      </div>
-
-      <!-- Живая тепловая карта троичной матрицы {-1, 0, +1} -->
-      <div class="rounded-2xl p-4 bg-slate-900/90 border border-slate-800 space-y-3">
-        <div class="flex items-center justify-between gap-2">
-          <div>
-            <h3 class="text-xs font-bold text-white">Визуализация троичных синапсов {-1, 0, +1}</h3>
-            <p class="text-[11px] text-slate-400">Каждый пиксель — реальный синапс обученной модели</p>
+        <!-- Сводные карточки экономии -->
+        <div class="stat-grid">
+          <div class="stat">
+            <div class="stat-label">Нули</div>
+            <div id="statSparsityVal" class="stat-value">29.8%</div>
+            <div class="stat-hint">синапсов отключено</div>
           </div>
-          <select id="matrixLayerSelect" class="bg-slate-950 text-xs text-cyan-300 border border-slate-700 rounded-lg px-2 py-1.5 mono">
-            <option value="w_think">w_think (Цикл Coconut)</option>
-            <option value="w_ssm">w_ssm (Память Mamba)</option>
-            <option value="w_ctx1">w_ctx1 (Локальное окно)</option>
-            <option value="w_out">w_out (Синтезатор речи)</option>
-          </select>
+          <div class="stat">
+            <div class="stat-label">Умножения</div>
+            <div class="stat-value">0</div>
+            <div class="stat-hint">только сложение и вычитание</div>
+          </div>
+          <div class="stat">
+            <div class="stat-label">Словарь / факты</div>
+            <div id="statVocabAndMemVal" class="stat-value" style="font-size: 14px">225 слов / 30 яч.</div>
+            <div class="stat-hint">индекс внешней памяти O(1)</div>
+          </div>
+          <div class="stat">
+            <div class="stat-label">Размер ядра</div>
+            <div id="statPackedSizeVal" class="stat-value">48.2 КБ</div>
+            <div class="stat-hint">по 5 тритов в байте</div>
+          </div>
         </div>
 
-        <div class="relative h-44 w-full bg-slate-950 rounded-xl border border-slate-800 overflow-hidden p-2 flex items-center justify-center">
-          <canvas id="ternaryMatrixCanvas" class="w-full h-full block"></canvas>
+        <!-- Живая карта троичной матрицы {-1, 0, +1} -->
+        <div class="card">
+          <div class="row" style="justify-content: space-between; align-items: flex-start">
+            <div>
+              <div class="card-title">Троичные синапсы {-1, 0, +1}</div>
+              <div class="subtle">Каждая клетка — реальный вес обученной модели</div>
+            </div>
+            <select id="matrixLayerSelect" class="field-select sm mono" style="width: auto">
+              <option value="w_think">w_think · цикл Coconut</option>
+              <option value="w_ssm">w_ssm · память Mamba</option>
+              <option value="w_ctx1">w_ctx1 · локальное окно</option>
+              <option value="w_out">w_out · выход</option>
+            </select>
+          </div>
+          <div class="matrix-box"><canvas id="ternaryMatrixCanvas"></canvas></div>
+          <div class="row" style="justify-content: space-between; margin-top: 12px">
+            <span class="legend-item"><span class="swatch plus"></span>+1 сложение</span>
+            <span class="legend-item"><span class="swatch zero"></span>0 пропуск</span>
+            <span class="legend-item"><span class="swatch minus"></span>−1 вычитание</span>
+          </div>
         </div>
 
-        <div class="flex items-center justify-between text-[11px] mono pt-1">
-          <span class="flex items-center gap-1.5 text-cyan-300">
-            <span class="w-3 h-3 rounded-sm bg-cyan-400 inline-block"></span> +1 (Сложение)
-          </span>
-          <span class="flex items-center gap-1.5 text-slate-400">
-            <span class="w-3 h-3 rounded-sm bg-slate-900 border border-slate-700 inline-block"></span> 0 (Пропуск)
-          </span>
-          <span class="flex items-center gap-1.5 text-rose-400">
-            <span class="w-3 h-3 rounded-sm bg-rose-500 inline-block"></span> -1 (Вычитание)
-          </span>
+        <!-- Экспорт чекпоинта -->
+        <div class="card upload-row">
+          <div>
+            <div class="card-title">Экспорт троичных весов</div>
+            <div class="subtle">Параметры ядра и первые 64 веса w_think в JSON</div>
+          </div>
+          <button id="exportWeightsBtn" type="button" class="btn" style="flex-shrink: 0">
+            <svg class="icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><rect width="14" height="14" x="8" y="8" rx="2" ry="2" /><path d="M4 16c-1.1 0-2-.9-2-2V4c0-1.1.9-2 2-2h10c1.1 0 2 .9 2 2" /></svg>
+            Скопировать дамп
+          </button>
         </div>
-      </div>
-
-      <!-- Экспорт чекпоинта -->
-      <div class="rounded-2xl p-4 bg-slate-900/90 border border-slate-800 flex items-center justify-between gap-3">
-        <div class="text-xs">
-          <div class="font-bold text-white">Экспорт троичных весов (JSON/Base64)</div>
-          <div class="text-slate-400 text-[11px]">Скопировать образец: параметры ядра и первые 64 веса w_think</div>
-        </div>
-        <button
-          id="exportWeightsBtn"
-          type="button"
-          class="px-3.5 py-2 rounded-xl bg-slate-800 hover:bg-slate-700 text-cyan-300 border border-cyan-500/30 text-xs font-semibold shrink-0"
-        >
-          📋 Скопировать дамп
-        </button>
       </div>
     </section>
-
-    <!-- НИЖНЯЯ МОБИЛЬНАЯ НАВИГАЦИЯ (ТАБ-БАР) -->
-    <nav class="bottom-nav">
-      <button id="navTabChat" type="button" class="nav-item active">
-        <span class="text-base">💬</span>
-        <span>Нейрочат</span>
-      </button>
-      <button id="navTabTrain" type="button" class="nav-item">
-        <span class="text-base">🎓</span>
-        <span>Дообучение</span>
-      </button>
-      <button id="navTabCore" type="button" class="nav-item">
-        <span class="text-base">🔬</span>
-        <span>Ядро b1.58</span>
-      </button>
-    </nav>
   </div>
+
+  <!-- УВЕДОМЛЕНИЕ (TOAST) ВМЕСТО БЛОКИРУЮЩИХ ALERT -->
+  <div id="toastBanner" class="toast hidden" role="status" aria-live="polite"></div>
 
   <!-- ========================================================================= -->
   <!-- ПОЛНОЕ МАТЕМАТИЧЕСКОЕ ЯДРО SLR-Net НА JAVASCRIPT (БЕЗ ВНЕШНИХ СЕРВЕРОВ)   -->
@@ -3540,6 +4384,7 @@
       const badge = document.getElementById("trainStatusBadge");
       if (box) box.classList.remove("hidden");
       if (global) global.classList.remove("hidden");
+      setStatusDot("working");
       if (fill) fill.style.width = pct.toFixed(1) + "%";
       if (gfill) gfill.style.width = pct.toFixed(1) + "%";
       if (phaseEl) phaseEl.textContent = phase;
@@ -3554,6 +4399,15 @@
       }
       const badge = document.getElementById("trainStatusBadge");
       if (badge) badge.textContent = "Готов";
+      setStatusDot(appState.engine ? "ok" : "");
+    }
+
+    // Точка в шапке: жёлтая — ядро учится, зелёная — готово отвечать
+    function setStatusDot(state) {
+      const dot = document.getElementById("statusDot");
+      if (!dot) return;
+      dot.className = "status-dot" + (state ? " " + state : "");
+      dot.title = state === "working" ? "Ядро обучается" : state === "ok" ? "Ядро готово" : "Состояние ядра";
     }
 
     function showTrainNote(text) {
@@ -3890,7 +4744,7 @@
 
       const headerStats = document.getElementById("headerStatsText");
       if (headerStats && appState.modelMode !== "mini") {
-        headerStats.textContent = `Веса {-1,0,+1} • Нулей: ${spPercent}% • Ядро: ${packedKb} КБ`;
+        headerStats.textContent = `Веса {-1,0,+1} · Нулей: ${spPercent}% · Ядро: ${packedKb} КБ`;
       }
 
       const welcomeBadge = document.getElementById("welcomeSparsityBadge");
@@ -3900,7 +4754,7 @@
 
       const liveMetrics = document.getElementById("liveTrainMetrics");
       if (liveMetrics) {
-        liveMetrics.textContent = `${(appState.lastAccuracy * 100).toFixed(1)}% • Loss ${appState.lastLoss.toFixed(3)}`;
+        liveMetrics.textContent = `${(appState.lastAccuracy * 100).toFixed(1)}% · Loss ${appState.lastLoss.toFixed(3)}`;
       }
 
       const timeLbl = document.getElementById("trainTimeLabel");
@@ -3924,6 +4778,43 @@
       }
     }
 
+    // Новый чат — одно действие на всё: лента очищается (вводная карточка остаётся), mini забывает разговор,
+    // обычная модель — недоспрошенный вопрос «не знаю — объясни». Выученные слова и веса не трогаются.
+    // Если mini сейчас пишет ответ или учится, сначала останавливаем её, а чистим, когда она остановится.
+    function startNewConversation() {
+      if (miniState.busy) {
+        miniState.cancelRequested = true;
+        miniState.clearAfterStop = true;
+        showToast("Останавливаю mini — потом начнём новый чат");
+        return;
+      }
+      miniState.clearAfterStop = false;
+      const container = document.getElementById("chatMessagesContainer");
+      while (container.children.length > 1) container.removeChild(container.lastChild);
+      miniResetContext();
+      miniState.lastUserText = "";
+      appState.pendingUnknownQuestion = null;
+      showToast(appState.modelMode === "mini" && miniState.bundle
+        ? "Новый чат: лента очищена, mini забыла, о чём вы говорили"
+        : "Новый чат: лента очищена");
+    }
+
+    // Подпись над сообщением: «Вы» или «Singularity» с пометкой, какая модель ответила
+    function makeRoleLabel(name, tag = "") {
+      const role = document.createElement("div");
+      role.className = "role";
+      const label = document.createElement("span");
+      label.textContent = name;
+      role.appendChild(label);
+      if (tag) {
+        const t = document.createElement("span");
+        t.className = "role-tag";
+        t.textContent = tag;
+        role.appendChild(t);
+      }
+      return role;
+    }
+
     // Рендеринг сообщения в мобильном чате
     function appendChatMessage(role, text, telemetryData = null) {
       const container = document.getElementById("chatMessagesContainer");
@@ -3931,18 +4822,19 @@
 
       const wrapper = document.createElement("div");
       if (role === "user") {
-        wrapper.className = "flex justify-end";
+        wrapper.className = "msg user";
+        wrapper.appendChild(makeRoleLabel("Вы"));
         const bubble = document.createElement("div");
-        bubble.className = "max-w-[82%] rounded-2xl rounded-br-sm px-3.5 py-2.5 bg-gradient-to-r from-violet-600 to-cyan-600 text-white text-sm shadow-md";
+        bubble.className = "bubble";
         bubble.textContent = text;
         wrapper.appendChild(bubble);
       } else {
-        wrapper.className = "flex justify-start";
-        const card = document.createElement("div");
-        card.className = "max-w-[92%] rounded-2xl rounded-bl-sm p-3.5 bg-slate-900/95 border border-slate-800 text-sm text-slate-100 space-y-2.5 shadow-lg";
+        wrapper.className = "msg assistant";
+        wrapper.appendChild(makeRoleLabel("Singularity", "обычная"));
+        const card = wrapper;
 
         const bodyDiv = document.createElement("div");
-        bodyDiv.className = "leading-relaxed";
+        bodyDiv.className = "bubble";
 
         if (telemetryData && telemetryData.telemetry && appState.xrayEnabled) {
           for (const item of telemetryData.telemetry) {
@@ -3953,7 +4845,6 @@
               const word = document.createElement("span");
               word.textContent = item.token;
               const sup = document.createElement("sup");
-              sup.className = "mono text-[9px] text-violet-300 font-bold";
               sup.textContent = `[${item.latentSteps}т]`;
               span.append(word, sup);
             } else {
@@ -3976,16 +4867,18 @@
           const thoughtWords = totalWords - fastWords;
 
           const metaBar = document.createElement("div");
-          metaBar.className = "pt-2 border-t border-slate-800/90 flex flex-wrap items-center justify-between gap-2 text-[11px] mono text-slate-400";
-          metaBar.innerHTML = `
-            <span class="text-emerald-300">⚡ Прямой проход: ${fastWords}/${totalWords} слов</span>
-            <span class="text-violet-300">🧠 Coconut: ${thoughtWords} узл.</span>
-            <span class="text-cyan-300">⏱ ${telemetryData.elapsedMs.toFixed(1)} мс (0 MUL)</span>
-          `;
+          metaBar.className = "msg-meta";
+          for (const part of [
+            `прямой проход ${fastWords}/${totalWords} слов`,
+            `coconut ${thoughtWords} узл.`,
+            `${telemetryData.elapsedMs.toFixed(1)} мс · 0 MUL`
+          ]) {
+            const span = document.createElement("span");
+            span.textContent = part;
+            metaBar.appendChild(span);
+          }
           card.appendChild(metaBar);
         }
-
-        wrapper.appendChild(card);
       }
 
       container.appendChild(wrapper);
@@ -4178,8 +5071,8 @@
       box.textContent = "";
       if (!miniState.modules.length) {
         const span = document.createElement("span");
-        span.className = "text-slate-500";
-        span.textContent = "Пока ничего не выучено. Объясните новое слово — кнопка «🧠 Научить» или «/запомни …» в чате.";
+        span.className = "subtle";
+        span.textContent = "Пока ничего. Объясните новое слово в поле выше или напишите «/запомни …» в чате.";
         box.appendChild(span);
         return;
       }
@@ -4189,10 +5082,10 @@
         const label = document.createElement("span");
         const rep = m.report || {};
         label.textContent = m.words.join(", ");
-        label.title = m.texts.join(" ") + (rep.neurons ? ` • ${rep.neurons} нейронов` : "");
+        label.title = m.texts.join(" ") + (rep.neurons ? ` · ${rep.neurons} нейронов` : "");
         const del = document.createElement("button");
         del.type = "button";
-        del.textContent = "✕";
+        del.innerHTML = '<svg class="icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M18 6 6 18" /><path d="m6 6 12 12" /></svg>';
         del.title = "Забыть это";
         del.setAttribute("aria-label", `Забыть: ${m.words.join(", ")}`);
         del.addEventListener("click", async () => {
@@ -4220,16 +5113,16 @@
     function miniShowError(text) {
       miniSetProgress(0, text);
       const label = document.getElementById("miniLoadText");
-      if (label) label.className = "text-[11px] text-rose-300 leading-relaxed";
+      if (label) label.className = "mini-load-text error";
       showToast("Не удалось загрузить mini");
     }
 
     function miniHeaderText() {
-      if (!miniState.bundle) return "mini: обученная LLM • веса ещё не загружены";
+      if (!miniState.bundle) return "mini: обученная LLM · веса ещё не загружены";
       const p = (miniState.bundle.meta.params / 1e6).toFixed(1);
-      const speed = miniState.lastSpeed ? ` • ${miniState.lastSpeed.toFixed(0)} ток/с` : "";
+      const speed = miniState.lastSpeed ? ` · ${miniState.lastSpeed.toFixed(0)} ток/с` : "";
       const self = miniState.bundle.selflearn ? "3" : "";
-      return `mini${self}${miniState.bundle.chat ? "-собеседник" : ""}: ${p} млн параметров • веса {-1,0,+1}${speed}`;
+      return `mini${self}${miniState.bundle.chat ? "-собеседник" : ""}: ${p} млн параметров · веса {-1,0,+1}${speed}`;
     }
 
     function updateMiniUI() {
@@ -4245,19 +5138,23 @@
       const status = document.getElementById("miniStatusText");
       if (status && loaded) {
         const m = miniState.bundle.meta;
-        const speed = miniState.lastSpeed ? ` • ${miniState.lastSpeed.toFixed(0)} ток/с` : "";
+        const speed = miniState.lastSpeed ? ` · ${miniState.lastSpeed.toFixed(0)} ток/с` : "";
         const learned = miniState.modules.reduce((s, x) => s + (x.report && x.report.neurons ? x.report.neurons : 0), 0);
         status.textContent = miniState.bundle.chat
-          ? `✅ ${miniState.bundle.selflearn ? "mini3 (умеет учиться)" : "mini-собеседник"} готов • ${(m.params / 1e6).toFixed(1)} млн параметров${learned ? ` + ${learned} своих нейронов` : ""}${speed}`
-          : `✅ mini готова (продолжатель субтитров) • ${(m.params / 1e6).toFixed(1)} млн параметров${m.step ? " • " + m.step.toLocaleString("ru-RU") + " шагов обучения" : ""}${speed}`;
+          ? `${miniState.bundle.selflearn ? "mini3 готова" : "mini-собеседник готов"} · ${(m.params / 1e6).toFixed(1)} млн параметров${learned ? ` + ${learned} своих нейронов` : ""}${speed}`
+          : `mini готова (продолжатель субтитров) · ${(m.params / 1e6).toFixed(1)} млн параметров${m.step ? " · " + m.step.toLocaleString("ru-RU") + " шагов обучения" : ""}${speed}`;
       }
       const chat = !loaded || !!miniState.bundle.chat;                // пока веса не загружены, ждём собеседника
       document.getElementById("miniChatPromptsBar").classList.toggle("hidden", !mini || !chat);
       document.getElementById("miniQuickPromptsBar").classList.toggle("hidden", !mini || chat);
       document.getElementById("miniLinesLabel").classList.toggle("hidden", chat);
-      document.getElementById("miniNewChatBtn").classList.toggle("hidden", !chat);
-      document.getElementById("miniUpgradeBox").classList.toggle("hidden", !loaded || chat);
-      document.getElementById("miniUpdateBox").classList.toggle("hidden", !loaded || !miniChatOutdated(miniState.bundle));
+      const upgrade = loaded && !chat, outdated = loaded && miniChatOutdated(miniState.bundle);
+      document.getElementById("miniUpgradeBox").classList.toggle("hidden", !upgrade);
+      document.getElementById("miniUpdateBox").classList.toggle("hidden", !outdated);
+      // Предупреждение не висит над чатом: в свёрнутой строке только маленькая метка, текст — внутри настроек
+      const alertBadge = document.getElementById("miniAlertBadge");
+      alertBadge.textContent = outdated ? "есть обновление" : upgrade ? "старая модель" : "";
+      alertBadge.classList.toggle("hidden", !outdated && !upgrade);
       const canLearn = loaded && !!miniState.bundle.selflearn;
       document.getElementById("miniLearnBox").classList.toggle("hidden", !canLearn);
       const learnBtn = document.getElementById("miniLearnGoBtn");
@@ -4271,6 +5168,18 @@
       if (mini) {
         const header = document.getElementById("headerStatsText");
         if (header) header.textContent = miniHeaderText();
+      }
+    }
+
+    // Настройки mini раскрываются по нажатию на строку состояния; выбор запоминается (по умолчанию свёрнуто)
+    function setMiniPanelOpen(open, { save = true } = {}) {
+      const box = document.getElementById("miniReadyBox");
+      const btn = document.getElementById("miniPanelToggle");
+      box.classList.toggle("open", open);
+      btn.setAttribute("aria-expanded", String(open));
+      btn.title = open ? "Свернуть настройки mini" : "Настройки mini: обучение, фантазия, веса";
+      if (save) {
+        try { localStorage.setItem("singularity_mini_panel_open", open ? "1" : "0"); } catch (e) { /* песочница */ }
       }
     }
 
@@ -4304,7 +5213,7 @@
         }
       }
       const label = document.getElementById("miniLoadText");
-      if (label) label.className = "mono text-[11px] text-slate-400";
+      if (label) label.className = "mini-load-text";
       document.getElementById("miniLoadProgress").classList.add("hidden");
       showToast(`mini загружена (${sourceLabel})${cached ? " и сохранена в браузере" : ""}`);
       updateMiniUI();
@@ -4425,12 +5334,12 @@
     function miniUpdateSendButton() {
       const btn = document.getElementById("sendMsgBtn");
       if (!btn) return;
-      const spans = btn.querySelectorAll("span");
-      if (spans.length >= 2) {
-        spans[0].textContent = miniState.busy ? "Стоп" : "Отпр.";
-        spans[1].textContent = miniState.busy ? "■" : "➤";
-      }
+      // Пока mini пишет ответ, кнопка отправки превращается в «Стоп»
+      btn.classList.toggle("busy", miniState.busy);
+      const label = btn.querySelector(".send-label");
+      if (label) label.textContent = miniState.busy ? "Стоп" : "";
       btn.title = miniState.busy ? "Остановить ответ mini" : "";
+      btn.setAttribute("aria-label", miniState.busy ? "Остановить ответ" : "Отправить");
     }
 
     async function miniFeed(ids, depthsOut = null) {
@@ -4554,15 +5463,14 @@
     function miniCreateReplyBubble() {
       const container = document.getElementById("chatMessagesContainer");
       const wrapper = document.createElement("div");
-      wrapper.className = "flex justify-start";
+      wrapper.className = "msg assistant";
       wrapper.setAttribute("data-mini-reply", "1");
-      const card = document.createElement("div");
-      card.className = "max-w-[92%] rounded-2xl rounded-bl-sm p-3.5 bg-slate-900/95 border border-cyan-800/60 text-sm text-slate-100 space-y-2.5 shadow-lg";
+      wrapper.appendChild(makeRoleLabel("Singularity", miniState.bundle.chat ? "mini" : "mini · сцена"));
+      const card = wrapper;
       const body = document.createElement("div");
-      body.className = "leading-relaxed mini-reply-body";
+      body.className = "bubble mini-reply-body";
       body.textContent = "…";
       card.appendChild(body);
-      wrapper.appendChild(card);
       container.appendChild(wrapper);
       container.scrollTop = container.scrollHeight;
       const tok = miniState.bundle.tokenizer;
@@ -4589,7 +5497,6 @@
               const w = document.createElement("span");
               w.textContent = text;                                     // textContent: защита от XSS
               const sup = document.createElement("sup");
-              sup.className = "mono text-[9px] text-violet-300 font-bold";
               sup.textContent = `[${d}т]`;
               span.append(w, sup);
             } else {
@@ -4619,21 +5526,18 @@
           const gen = res.ids.filter(id => id !== tok.nlId).length;
           const thought = res.depths.reduce((a, b) => a + b, 0) / Math.max(1, res.depths.length);
           const meta = document.createElement("div");
-          meta.className = "mini-meta pt-2 border-t border-slate-800/90 flex flex-wrap items-center justify-between gap-2 text-[11px] mono text-slate-400";
+          meta.className = "msg-meta mini-meta";
           const a = document.createElement("span");
-          a.className = "text-cyan-300";
-          a.textContent = `${miniState.bundle.chat ? "💬" : "🎬"} mini • ${gen} ток.${res.stopped ? " • остановлено" : ""}`;
+          a.textContent = `${gen} ток.${res.stopped ? " · остановлено" : ""}`;
           const b = document.createElement("span");
-          b.className = "text-violet-300";
-          b.textContent = `🧠 ${thought.toFixed(1)} шага ядра/токен`;
+          b.textContent = `${thought.toFixed(1)} шага ядра/токен`;
           const c = document.createElement("span");
-          c.className = "text-emerald-300";
-          c.textContent = `⏱ ${(res.ms / 1000).toFixed(1)} с • ${res.tokPerSec.toFixed(0)} ток/с`;
+          c.textContent = `${(res.ms / 1000).toFixed(1)} с · ${res.tokPerSec.toFixed(0)} ток/с`;
           meta.append(a, b, c);
           if (res.knowledge && res.knowledge.length) {
             const k = document.createElement("span");
-            k.className = "text-fuchsia-300";
-            k.textContent = `🧠 выученное: ${res.knowledge.join("; ")}`;
+            k.className = "meta-accent";
+            k.textContent = `выученное: ${res.knowledge.join("; ")}`;
             meta.appendChild(k);
           }
           card.appendChild(meta);
@@ -4678,6 +5582,7 @@
         miniState.cancelRequested = false;
         miniUpdateSendButton();
         updateMiniUI();
+        if (miniState.clearAfterStop) startNewConversation();
       }
     }
 
@@ -4685,23 +5590,19 @@
     function miniCreateLearnBubble() {
       const container = document.getElementById("chatMessagesContainer");
       const wrapper = document.createElement("div");
-      wrapper.className = "flex justify-start";
+      wrapper.className = "msg assistant";
       wrapper.setAttribute("data-mini-learn", "1");
-      const card = document.createElement("div");
-      card.className = "max-w-[92%] rounded-2xl rounded-bl-sm p-3.5 bg-slate-900/95 border border-violet-700/60 text-sm text-slate-100 space-y-2 shadow-lg";
-      const title = document.createElement("div");
-      title.className = "text-violet-300 font-semibold text-[13px]";
-      title.textContent = "🧠 Самообучение";
+      const card = wrapper;
+      const title = makeRoleLabel("Singularity", "самообучение");
       const track = document.createElement("div");
-      track.className = "progress-track";
+      track.className = "progress-track learn-track";
       const fill = document.createElement("div");
       fill.className = "progress-fill";
       track.appendChild(fill);
       const text = document.createElement("div");
-      text.className = "mono text-[11px] text-slate-400 learn-progress-text";
+      text.className = "mini-load-text learn-progress-text";
       text.textContent = "Готовлю вопросы…";
       card.append(title, track, text);
-      wrapper.appendChild(card);
       container.appendChild(wrapper);
       container.scrollTop = container.scrollHeight;
       return {
@@ -4714,20 +5615,20 @@
           track.remove();
           text.remove();
           const body = document.createElement("div");
-          body.className = "leading-relaxed learn-result";
+          body.className = "bubble learn-result";
           const n10 = r.neurons % 10, n100 = r.neurons % 100;
           const word = n10 === 1 && n100 !== 11 ? "новый нейрон" : n10 >= 2 && n10 <= 4 && (n100 < 12 || n100 > 14) ? "новых нейрона" : "новых нейронов";
           body.textContent = `Запомнил: ${mod.words.join(", ")}. Отрастил себе ${r.neurons} ${word} ` +
             `(${(r.newParams / 1000).toFixed(1)} тыс. чисел; старые веса не менялись) за ${Math.round(r.seconds)} с. ` +
             `Самопроверка: ${Math.round((last.selfCheck || 0) * 100)}% нового на своих отложенных вопросах, ` +
-            `старое не задето на ${Math.round((last.keep || 0) * 100)}%. Спросите меня — даже в новом разговоре (↺).` +
+            `старое не задето на ${Math.round((last.keep || 0) * 100)}%. Спросите меня — даже в новом чате.` +
             (saved ? "" : " (Сохранить в браузере не удалось: выученное пропадёт при перезагрузке страницы.)");
           card.appendChild(body);
           container.scrollTop = container.scrollHeight;
         },
         fail(e) {
           track.remove();
-          text.className = "text-[12px] text-rose-300 leading-relaxed";
+          text.className = "bubble learn-error";
           text.textContent = `Не выучил: ${e && e.message ? e.message : e}`;
         }
       };
@@ -4770,6 +5671,7 @@
         miniState.cancelRequested = false;
         miniUpdateSendButton();
         updateMiniUI();
+        if (miniState.clearAfterStop) startNewConversation();
       }
     }
 
@@ -4796,25 +5698,25 @@
           if (btn) handleUserPrompt(btn.getAttribute("data-prompt"));
         });
       }
-      document.getElementById("miniUpgradeBtn").addEventListener("click", () => miniDownload());
-      document.getElementById("miniLearnToggleBtn").addEventListener("click", () => {
-        document.getElementById("miniLearnForm").classList.toggle("hidden");
-      });
+      // «Обновить» / «Выучить» сворачивают настройки, чтобы были видны прогресс и чат
+      document.getElementById("miniUpgradeBtn").addEventListener("click", () => { setMiniPanelOpen(false, { save: false }); miniDownload(); });
       document.getElementById("miniLearnGoBtn").addEventListener("click", async () => {
         const inp = document.getElementById("miniLearnInput");
         const text = inp.value.trim();
         if (!text) { showToast("Напишите, что выучить: «Слово — это …»"); return; }
         if (appState.modelMode !== "mini" || miniState.busy) return;
+        setMiniPanelOpen(false, { save: false });
         appendChatMessage("user", "/запомни " + text);
         const mod = await miniLearn(text);
-        if (mod) { inp.value = ""; document.getElementById("miniLearnForm").classList.add("hidden"); }
+        if (mod) inp.value = "";
       });
-      document.getElementById("miniUpdateBtn").addEventListener("click", () => miniDownload());
-      document.getElementById("miniNewChatBtn").addEventListener("click", () => {
-        if (miniState.busy) return;
-        miniResetContext();
-        showToast("Начинаем разговор заново: mini забыла, что вы говорили");
+      document.getElementById("miniUpdateBtn").addEventListener("click", () => { setMiniPanelOpen(false, { save: false }); miniDownload(); });
+      document.getElementById("miniPanelToggle").addEventListener("click", () => {
+        setMiniPanelOpen(!document.getElementById("miniReadyBox").classList.contains("open"));
       });
+      let panelOpen = false;
+      try { panelOpen = localStorage.getItem("singularity_mini_panel_open") === "1"; } catch (e) { /* песочница */ }
+      setMiniPanelOpen(panelOpen, { save: false });
       document.getElementById("miniForgetBtn").addEventListener("click", async () => {
         try { await miniCacheDelete(); } catch (e) { /* ничего */ }
         miniState.bundle = null;
@@ -4825,6 +5727,12 @@
       let saved = "regular";
       try { saved = localStorage.getItem("slr_net_model_mode") || "regular"; } catch (e) { /* песочница */ }
       setModelMode(saved, { save: false });
+    }
+
+    // Цвет из текущей темы (светлой или тёмной) — графики перерисовываются при смене темы
+    function themeColor(name, fallback) {
+      const v = getComputedStyle(document.documentElement).getPropertyValue(name).trim();
+      return v || fallback;
     }
 
     // Отрисовка графика падения Loss на Canvas
@@ -4848,7 +5756,7 @@
       const pad = 16;
 
       // Сетка
-      ctx.strokeStyle = "rgba(148, 163, 184, 0.12)";
+      ctx.strokeStyle = themeColor("--border-0", "rgba(255, 255, 255, 0.07)");
       ctx.lineWidth = 1;
       for (let i = 0; i < 3; i++) {
         const y = pad + ((h - pad * 2) * i) / 2;
@@ -4859,8 +5767,9 @@
       }
 
       // Линия Loss
-      ctx.strokeStyle = "#06b6d4";
-      ctx.lineWidth = 2.5;
+      ctx.strokeStyle = themeColor("--text-0", "#f0f0f0");
+      ctx.lineWidth = 1.75;
+      ctx.lineJoin = "round";
       ctx.beginPath();
       for (let i = 0; i < hist.length; i++) {
         const x = pad + ((w - pad * 2) * i) / (hist.length - 1);
@@ -4871,11 +5780,13 @@
       }
       ctx.stroke();
 
-      ctx.fillStyle = "#94a3b8";
-      ctx.font = "10px JetBrains Mono, monospace";
-      ctx.fillText(`Старт: ${hist[0].toFixed(2)}`, pad + 4, pad + 10);
-      ctx.fillStyle = "#10b981";
-      ctx.fillText(`Финал: ${hist[hist.length - 1].toFixed(3)}`, w - 95, h - pad - 6);
+      ctx.fillStyle = themeColor("--text-2", "#686868");
+      ctx.font = "10px ui-monospace, Menlo, Consolas, monospace";
+      ctx.fillText(`старт ${hist[0].toFixed(2)}`, pad + 4, pad + 10);
+      ctx.fillStyle = themeColor("--success", "#3fb950");
+      ctx.textAlign = "right";
+      ctx.fillText(`финал ${hist[hist.length - 1].toFixed(3)}`, w - pad - 4, h - pad - 6);
+      ctx.textAlign = "left";
     }
 
     // Отрисовка тепловой карты троичных весов {-1, 0, +1}
@@ -4899,18 +5810,34 @@
       const rows = 20;
       const cellW = w / cols;
       const cellH = h / rows;
+      const colPlus = themeColor("--text-0", "#f0f0f0");     // +1 Сложение
+      const colMinus = themeColor("--error", "#f85149");     // -1 Вычитание
+      const colZero = themeColor("--bg-3", "#1e1e1e");       // 0 Отключённый синапс
+      ctx.clearRect(0, 0, w, h);
 
       for (let r = 0; r < rows; r++) {
         for (let c = 0; c < cols; c++) {
           const idx = (r * cols + c) % wTern.length;
           const val = wTern[idx];
-          if (val === 1) ctx.fillStyle = "#22d3ee";      // +1 Сложение
-          else if (val === -1) ctx.fillStyle = "#f43f5e"; // -1 Вычитание
-          else ctx.fillStyle = "#0f172a";                 // 0 Отключённый синапс
+          if (val === 1) ctx.fillStyle = colPlus;
+          else if (val === -1) ctx.fillStyle = colMinus;
+          else ctx.fillStyle = colZero;
 
           ctx.fillRect(c * cellW + 1, r * cellH + 1, Math.max(2, cellW - 2), Math.max(2, cellH - 2));
         }
       }
+    }
+
+    // Тема оформления: цвета берутся из CSS-переменных, графики на canvas перерисовываются
+    function applyTheme(theme) {
+      const t = theme === "light" ? "light" : "dark";
+      document.documentElement.setAttribute("data-theme", t);
+      const meta = document.querySelector('meta[name="theme-color"]');
+      if (meta) meta.setAttribute("content", t === "light" ? "#ffffff" : "#080808");
+      const btn = document.getElementById("themeToggle");
+      if (btn) btn.title = t === "light" ? "Включить тёмную тему" : "Включить светлую тему";
+      if (!document.getElementById("tabTrainView").classList.contains("hidden")) drawLossChart();
+      if (!document.getElementById("tabCoreView").classList.contains("hidden")) drawTernaryMatrix();
     }
 
     // Переключение мобильных вкладок
@@ -4974,6 +5901,15 @@
         handleUserPrompt(text);
       });
 
+      // Колесо мыши над лентой подсказок прокручивает её вбок
+      for (const bar of document.querySelectorAll(".chip-scroll")) {
+        bar.addEventListener("wheel", (e) => {
+          if (Math.abs(e.deltaY) <= Math.abs(e.deltaX)) return;
+          bar.scrollLeft += e.deltaY;
+          e.preventDefault();
+        }, { passive: false });
+      }
+
       // Быстрые чипсы вопросов
       const quickBar = document.getElementById("quickPromptsBar");
       quickBar.addEventListener("click", (e) => {
@@ -4982,30 +5918,28 @@
         handleUserPrompt(btn.getAttribute("data-prompt"));
       });
 
-      // Кнопка очистки чата
-      document.getElementById("clearChatBtn").addEventListener("click", () => {
-        const container = document.getElementById("chatMessagesContainer");
-        while (container.children.length > 1) {
-          container.removeChild(container.lastChild);
-        }
-        miniResetContext();                   // mini тоже начинает новый диалог
-        showToast("История диалога очищена");
-      });
+      // «Новый чат»: одна кнопка очищает и ленту, и память модели о разговоре
+      document.getElementById("clearChatBtn").addEventListener("click", () => startNewConversation());
 
       // Переключатель режима "Рентген слов"
       const xrayBtn = document.getElementById("xrayToggleBtn");
       xrayBtn.addEventListener("click", () => {
         appState.xrayEnabled = !appState.xrayEnabled;
-        if (appState.xrayEnabled) {
-          xrayBtn.innerHTML = "<span>⚡ Рентген: ВКЛ</span>";
-          xrayBtn.className = "px-2.5 py-1.5 rounded-lg text-xs font-semibold border transition-all shrink-0 flex items-center gap-1.5 bg-violet-500/20 border-violet-400/50 text-violet-200";
-          showToast("Подсветка латентных тактов Coconut включена");
-        } else {
-          xrayBtn.innerHTML = "<span>⚡ Рентген: ВЫКЛ</span>";
-          xrayBtn.className = "px-2.5 py-1.5 rounded-lg text-xs font-semibold border transition-all shrink-0 flex items-center gap-1.5 bg-slate-800 border-slate-700 text-slate-400";
-          showToast("Обычный текстовый режим без подсветки токенов");
-        }
+        xrayBtn.classList.toggle("active", appState.xrayEnabled);
+        xrayBtn.setAttribute("aria-pressed", String(appState.xrayEnabled));
+        xrayBtn.querySelector(".toggle-state").textContent = appState.xrayEnabled ? "вкл" : "выкл";
+        showToast(appState.xrayEnabled
+          ? "Рентген включён: видно, где роутер включил цикл размышления"
+          : "Рентген выключен: обычный текст без подсветки");
       });
+
+      // Светлая / тёмная тема (выбор запоминается)
+      document.getElementById("themeToggle").addEventListener("click", () => {
+        const next = document.documentElement.getAttribute("data-theme") === "light" ? "dark" : "light";
+        applyTheme(next);
+        try { localStorage.setItem("singularity_theme", next); } catch (e) { /* песочница */ }
+      });
+      applyTheme(document.documentElement.getAttribute("data-theme") || "dark");
 
       // Переключатель «Обычная / mini» и загрузка весов mini
       bindMiniUI();

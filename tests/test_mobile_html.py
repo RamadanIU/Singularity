@@ -286,6 +286,13 @@ MINI_STRINGS = ["Привет! Как дела?", "  много   пробело
                 "А-а-а!!!", "привет\nмир\n", "Мне было 17.", "Ты можешь взять их на 40%.", "O'Нил, сэр!"]
 
 
+def _open_mini_settings(pg):
+    """Раскрыть настройки mini (по умолчанию панель свёрнута в одну строку состояния)."""
+    if not pg.evaluate("() => document.getElementById('miniReadyBox').classList.contains('open')"):
+        pg.click("#miniPanelToggle")
+    pg.wait_for_selector("#miniForgetBtn", state="visible", timeout=5000)        # раскрывается плавно, ~0.3 с
+
+
 def _load_mini(pg):
     pg.click("#modeMiniBtn")
     pg.set_input_files("#miniFileInput", MINI_NPZ)
@@ -396,6 +403,7 @@ def test_mini_weights_are_cached_and_mode_is_remembered(browser):
         pg.reload()
         pg.wait_for_function("() => miniState.bundle !== null", timeout=60000)
         assert pg.evaluate("() => [appState.modelMode, miniState.source]") == ["mini", "из памяти браузера"]
+        _open_mini_settings(pg)
         pg.click("#miniForgetBtn")
         pg.wait_for_function("() => miniState.bundle === null", timeout=10000)
         pg.reload()
@@ -581,6 +589,45 @@ def test_old_chat_weights_offer_update(browser):
         pg.close()
 
 
+def test_mini_panel_is_one_collapsible_line(chat_page):
+    """Готовая mini не загораживает чат: над лентой одна тонкая строка состояния, настройки (обучение, фантазия,
+    удаление весов) раскрываются по нажатию и сворачиваются обратно; выбор запоминается."""
+    pg = chat_page
+    pg.evaluate("() => setMiniPanelOpen(false)")
+    bar = pg.evaluate("() => document.getElementById('miniPanel').getBoundingClientRect().height")
+    assert bar < 50, bar                                                     # одна строка, а не полэкрана
+    assert not pg.is_visible("#miniForgetBtn") and not pg.is_visible("#miniTempSelect")
+    pg.click("#miniPanelToggle")
+    pg.wait_for_selector("#miniForgetBtn", state="visible", timeout=5000)        # раскрывается плавно, ~0.3 с
+    assert pg.is_visible("#miniLearnInput")
+    assert pg.evaluate("() => localStorage.getItem('singularity_mini_panel_open')") == "1"
+    pg.click("#miniPanelToggle")
+    pg.wait_for_selector("#miniForgetBtn", state="hidden", timeout=5000)
+    assert pg.evaluate("() => localStorage.getItem('singularity_mini_panel_open')") == "0"
+    # предупреждение об обновлении — маленькая метка в строке, а не плашка с кнопками над чатом
+    pg.evaluate("() => { window.__step = miniState.bundle.meta.step; miniState.bundle.meta.step = 1; updateMiniUI(); }")
+    try:
+        assert pg.is_visible("#miniAlertBadge") and not pg.is_visible("#miniUpdateBtn")
+        assert pg.evaluate("() => document.getElementById('miniPanel').getBoundingClientRect().height") < 50
+    finally:
+        pg.evaluate("() => { miniState.bundle.meta.step = window.__step; updateMiniUI(); }")
+    assert not pg.is_visible("#miniAlertBadge")
+    assert pg.errors == []
+
+
+def test_new_chat_button_stops_mini_and_clears_everything(chat_page):
+    """«Новый чат» во время ответа mini: ответ останавливается, затем очищаются и лента, и память модели."""
+    pg = chat_page
+    pg.fill("#chatInputField", "Расскажи анекдот.")
+    pg.click("#sendMsgBtn")
+    pg.wait_for_function("() => miniState.busy", timeout=10000)
+    pg.click("#clearChatBtn")
+    pg.wait_for_function("() => !miniState.busy && miniState.ctxIds.length === 0", timeout=30000)
+    assert pg.evaluate("() => document.querySelectorAll('#chatMessagesContainer > .msg').length") == 1
+    assert pg.evaluate("() => miniState.clearAfterStop") is False
+    assert pg.errors == []
+
+
 def test_chat_mode_keeps_dialogue_and_can_start_over(chat_page):
     pg = chat_page
     assert pg.evaluate("() => !document.getElementById('miniChatPromptsBar').classList.contains('hidden')")
@@ -607,8 +654,9 @@ def test_chat_mode_keeps_dialogue_and_can_start_over(chat_page):
     assert ids[0] == user_id and ids.count(user_id) == 2 and ids.count(bot_id) == 2 and ids[-1] == nl
     assert pg.evaluate("() => window.__maxGap") < 1000, "главный поток был занят слишком долго"
 
-    pg.click("#miniNewChatBtn")                                              # новый разговор: всё забыто
+    pg.click("#clearChatBtn")                                                # «Новый чат»: лента и память — одним нажатием
     assert pg.evaluate("() => miniState.ctxIds.length") == 0
+    assert pg.evaluate("() => document.querySelectorAll('#chatMessagesContainer > .msg').length") == 1  # осталась вводная
     pg.evaluate("() => { miniState.temperature = 0.8; }")
     assert pg.errors == []
 
@@ -901,6 +949,7 @@ def test_selflearn_end_to_end_in_browser(browser):
                              timeout=120000)
         a, kn = ask("Напомни, что такое курдяпа.")
         assert "птиц" in a.lower() and kn == ["курдяпа"], a
+        _open_mini_settings(pg)
         pg.click("#miniModulesList .learned-chip button")                     # забыть
         pg.wait_for_function("() => miniState.modules.length === 0", timeout=10000)
         a, kn = ask("Что такое курдяпа?")
