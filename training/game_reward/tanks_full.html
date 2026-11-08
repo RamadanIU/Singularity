@@ -1,0 +1,127 @@
+<!doctype html>
+<html lang="ru">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Танчики</title>
+<style>
+  html, body { margin: 0; height: 100%; background: #1b1f16; overflow: hidden; touch-action: none; }
+  canvas { display: block; margin: 0 auto; background: #3b4a2a; }
+  #pad { position: fixed; left: 0; right: 0; bottom: 8px; display: flex; justify-content: center; gap: 8px; }
+  #pad button { width: 56px; height: 56px; font-size: 22px; opacity: .7; border-radius: 12px; border: 0; }
+</style>
+</head>
+<body>
+<canvas id="game"></canvas>
+<div id="pad">
+  <button data-k="left">◀</button><button data-k="up">▲</button><button data-k="down">▼</button>
+  <button data-k="right">▶</button><button data-k="fire">●</button>
+</div>
+<script>
+// Полная версия: игровой цикл, управление (стрелки/WASD, пробел — выстрел), касания, масштаб под экран,
+// враги с простым ИИ, столкновения, счёт и жизни, конец игры и рестарт (R или касание).
+const W = 640, H = 480;                       // логический размер поля; на экране — масштаб под окно
+const cv = document.getElementById('game'), ctx = cv.getContext('2d');
+let scale = 1;
+function resize() {
+  scale = Math.min(innerWidth / W, (innerHeight - 72) / H);
+  cv.width = Math.floor(W * scale); cv.height = Math.floor(H * scale);
+}
+addEventListener('resize', resize); resize();
+
+const keys = {};
+const map = { ArrowLeft: 'left', a: 'left', ArrowRight: 'right', d: 'right', ArrowUp: 'up', w: 'up',
+              ArrowDown: 'down', s: 'down', ' ': 'fire' };
+addEventListener('keydown', e => { const k = map[e.key]; if (k) { keys[k] = true; e.preventDefault(); }
+                                   if (e.key === 'r' || e.key === 'R') restart(); });
+addEventListener('keyup', e => { const k = map[e.key]; if (k) keys[k] = false; });
+for (const b of document.querySelectorAll('#pad button')) {
+  b.addEventListener('pointerdown', e => { keys[b.dataset.k] = true; e.preventDefault(); });
+  b.addEventListener('pointerup', () => { keys[b.dataset.k] = false; });
+  b.addEventListener('pointerleave', () => { keys[b.dataset.k] = false; });
+}
+cv.addEventListener('touchstart', () => { if (state.over) restart(); });
+
+const DIRS = { up: [0, -1], down: [0, 1], left: [-1, 0], right: [1, 0] };
+let state;
+function restart() {
+  state = { player: { x: W / 2, y: H - 60, dir: 'up', cd: 0 }, bullets: [], enemies: [], score: 0, lives: 3,
+            over: false, spawn: 0, walls: [[120, 140, 120, 24], [400, 140, 120, 24], [260, 260, 120, 24]] };
+}
+restart();
+
+function hitWall(x, y, r) {
+  if (x < r || y < r || x > W - r || y > H - r) return true;
+  return state.walls.some(([wx, wy, ww, wh]) => x + r > wx && x - r < wx + ww && y + r > wy && y - r < wy + wh);
+}
+function move(t, dir, speed) {
+  const [dx, dy] = DIRS[dir]; t.dir = dir;
+  const nx = t.x + dx * speed, ny = t.y + dy * speed;
+  if (!hitWall(nx, ny, 14)) { t.x = nx; t.y = ny; return true; }
+  return false;
+}
+function fire(t, owner) {
+  const [dx, dy] = DIRS[t.dir];
+  state.bullets.push({ x: t.x + dx * 18, y: t.y + dy * 18, dx: dx * 6, dy: dy * 6, owner });
+}
+
+function update() {
+  const s = state;
+  if (s.over) return;
+  const p = s.player;
+  for (const d of ['up', 'down', 'left', 'right']) if (keys[d]) { move(p, d, 2.5); break; }
+  if (p.cd > 0) p.cd--;
+  if (keys.fire && p.cd === 0) { fire(p, 'player'); p.cd = 18; }
+  if (--s.spawn <= 0 && s.enemies.length < 4) {
+    s.enemies.push({ x: 40 + Math.random() * (W - 80), y: 30, dir: 'down', cd: 60, turn: 40 }); s.spawn = 150;
+  }
+  for (const e of s.enemies) {
+    if (--e.turn <= 0 || !move(e, e.dir, 1.2)) {
+      e.dir = ['up', 'down', 'left', 'right'][Math.floor(Math.random() * 4)]; e.turn = 30 + Math.random() * 60;
+    }
+    if (--e.cd <= 0) { fire(e, 'enemy'); e.cd = 70 + Math.random() * 60; }
+  }
+  for (const b of s.bullets) { b.x += b.dx; b.y += b.dy; if (hitWall(b.x, b.y, 2)) b.dead = true; }
+  for (const b of s.bullets) {
+    if (b.dead) continue;
+    if (b.owner === 'player') {
+      for (const e of s.enemies) if (!e.dead && Math.hypot(e.x - b.x, e.y - b.y) < 16) {
+        e.dead = b.dead = true; s.score += 100;
+      }
+    } else if (Math.hypot(p.x - b.x, p.y - b.y) < 16) {
+      b.dead = true; s.lives--; p.x = W / 2; p.y = H - 60;
+      if (s.lives <= 0) s.over = true;
+    }
+  }
+  s.bullets = s.bullets.filter(b => !b.dead);
+  s.enemies = s.enemies.filter(e => !e.dead);
+}
+
+function tank(t, color) {
+  ctx.save(); ctx.translate(t.x, t.y);
+  ctx.rotate({ up: 0, right: Math.PI / 2, down: Math.PI, left: -Math.PI / 2 }[t.dir]);
+  ctx.fillStyle = color; ctx.fillRect(-14, -14, 28, 28);
+  ctx.fillStyle = '#222'; ctx.fillRect(-3, -22, 6, 14);
+  ctx.restore();
+}
+function draw() {
+  const s = state;
+  ctx.setTransform(scale, 0, 0, scale, 0, 0);
+  ctx.fillStyle = '#3b4a2a'; ctx.fillRect(0, 0, W, H);
+  ctx.fillStyle = '#8a6d3b'; for (const [x, y, w, h] of s.walls) ctx.fillRect(x, y, w, h);
+  tank(s.player, '#4caf50');
+  for (const e of s.enemies) tank(e, '#e53935');
+  ctx.fillStyle = '#ffeb3b'; for (const b of s.bullets) ctx.fillRect(b.x - 2, b.y - 2, 4, 4);
+  ctx.fillStyle = '#fff'; ctx.font = '18px sans-serif';
+  ctx.fillText('Счёт: ' + s.score + '   Жизни: ' + s.lives, 10, 22);
+  if (s.over) {
+    ctx.fillStyle = 'rgba(0,0,0,.6)'; ctx.fillRect(0, 0, W, H);
+    ctx.fillStyle = '#fff'; ctx.font = '36px sans-serif'; ctx.fillText('Игра окончена', W / 2 - 120, H / 2);
+    ctx.font = '18px sans-serif'; ctx.fillText('R или касание — заново', W / 2 - 100, H / 2 + 32);
+  }
+}
+function loop() { update(); draw(); requestAnimationFrame(loop); }
+loop();
+</script>
+</body>
+</html>

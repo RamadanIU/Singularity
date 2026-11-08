@@ -1,0 +1,20 @@
+<!doctype html>
+<html lang="ru">
+<head><meta charset="utf-8"><title>Танчики (с ошибкой)</title></head>
+<body>
+<canvas id="game" width="640" height="480"></canvas>
+<script>
+// Почти полная версия, но с опечаткой: ctx не объявлен — игра падает при загрузке.
+const canvas = document.getElementById('game');
+let score = 0;
+addEventListener('keydown', e => { if (e.key === ' ') score++; });
+function loop() {
+  ctxx.fillStyle = '#3b4a2a';
+  ctxx.fillRect(0, 0, 640, 480);
+  ctxx.fillText('Счёт: ' + score, 10, 20);
+  requestAnimationFrame(loop);
+}
+loop();
+</script>
+</body>
+</html>
