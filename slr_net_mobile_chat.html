@@ -542,7 +542,6 @@
     .mini-panel {
       flex-shrink: 0;
       margin: 10px 16px 0;
-      padding: 12px 14px;
       background: var(--bg-1);
       border: 1px solid var(--border-0);
       border-radius: var(--r-lg);
@@ -550,8 +549,6 @@
       color: var(--text-1);
       animation: popIn 0.18s var(--ease-out-expo);
     }
-    .mini-panel > div > * + * { margin-top: 10px; }
-    .mini-desc { line-height: 1.6; }
     .mini-row {
       display: flex;
       flex-wrap: wrap;
@@ -560,7 +557,6 @@
     }
     .mini-controls { flex-wrap: nowrap; font-size: 11px; color: var(--text-2); }
     .mini-controls label { display: inline-flex; align-items: center; gap: 6px; white-space: nowrap; }
-    .mini-controls .spacer { flex: 1; }
     .mini-status { display: flex; align-items: center; gap: 7px; font-size: 11px; color: var(--text-1); line-height: 1.5; }
     .mini-status::before {
       content: '';
@@ -581,6 +577,139 @@
     }
     .notice .btn { margin-top: 8px; }
     .mini-load-text { font-family: var(--font-mono); font-size: 11px; color: var(--text-2); margin-top: 6px; }
+
+    /* Карточка загрузки (весов ещё нет): заголовок, «Что умеет» под спойлером, две кнопки */
+    .mini-load { padding: 12px 14px; }
+    .mini-progress { padding: 0 14px 12px; }
+    .mini-ready:not(.hidden) + .mini-progress { padding-top: 4px; }
+    .mini-load > * + * { margin-top: 10px; }
+    .mini-about summary {
+      display: inline-flex;
+      align-items: center;
+      gap: 4px;
+      font-size: 11px;
+      color: var(--text-2);
+      cursor: pointer;
+      list-style: none;
+      user-select: none;
+    }
+    .mini-about summary::-webkit-details-marker { display: none; }
+    .mini-about summary::after { content: '›'; transition: transform var(--transition); }
+    .mini-about[open] summary::after { transform: rotate(90deg); }
+    .mini-about summary:hover { color: var(--text-1); }
+    .mini-about p { margin-top: 6px; line-height: 1.6; }
+
+    /* Готовая модель: тонкая строка состояния, настройки раскрываются плавно */
+    .mini-bar {
+      display: flex;
+      align-items: center;
+      gap: 8px;
+      width: 100%;
+      min-height: 36px;
+      padding: 0 10px 0 12px;
+      background: transparent;
+      border: none;
+      border-radius: var(--r-lg);
+      color: var(--text-1);
+      text-align: left;
+    }
+    .mini-bar:hover { background: var(--bg-2); }
+    .mini-bar .mini-status {
+      display: block;
+      flex: 1;
+      min-width: 0;
+      position: relative;
+      padding-left: 13px;
+      overflow: hidden;
+      text-overflow: ellipsis;
+      white-space: nowrap;
+    }
+    .mini-bar .mini-status::before { position: absolute; left: 0; top: 50%; margin-top: -3px; }
+    .mini-chevron { color: var(--text-2); transition: transform 0.3s var(--ease-out-expo); }
+    .mini-ready.open .mini-chevron { transform: rotate(180deg); }
+    .mini-alert {
+      flex-shrink: 0;
+      padding: 1px 7px;
+      border-radius: 10px;
+      font-size: 10px;
+      font-weight: 500;
+      background: var(--warning-bg);
+      border: 1px solid var(--warning-border);
+      color: var(--warning);
+      white-space: nowrap;
+    }
+    .mini-collapse {
+      display: grid;
+      grid-template-rows: 0fr;
+      transition: grid-template-rows 0.3s var(--ease-out-expo);
+    }
+    .mini-ready.open .mini-collapse { grid-template-rows: 1fr; }
+    .mini-settings {
+      min-height: 0;
+      overflow: hidden;
+      visibility: hidden;                 /* свёрнутые настройки не ловят нажатия и Tab */
+      transition: visibility 0s linear 0.3s;
+    }
+    .mini-ready.open .mini-settings {
+      visibility: visible;
+      transition-delay: 0s;
+      max-height: min(60vh, 520px);
+      overflow-y: auto;
+    }
+    .mini-settings > * { margin: 0 12px 12px; }
+    .mini-settings > :first-child { margin-top: 4px; }
+    .mini-section { display: flex; flex-direction: column; gap: 8px; padding-top: 10px; border-top: 1px solid var(--border-1); }
+    .mini-learn-input { min-height: 56px; font-family: var(--font-sans); font-size: 12px; }
+    .mini-learn-row { flex-wrap: nowrap; align-items: flex-start; }
+    .mini-learn-row .subtle { line-height: 1.5; }
+    .learned-list { display: flex; flex-wrap: wrap; gap: 6px; }
+    .learned-chip {
+      display: inline-flex;
+      align-items: center;
+      gap: 2px;
+      height: 24px;
+      padding: 0 2px 0 9px;
+      border-radius: var(--r-md);
+      background: var(--bg-2);
+      border: 1px solid var(--border-0);
+      color: var(--text-0);
+      font-size: 11px;
+    }
+    .learned-chip button {
+      display: inline-flex;
+      align-items: center;
+      justify-content: center;
+      width: 20px;
+      height: 20px;
+      border: none;
+      border-radius: var(--r-sm);
+      background: transparent;
+      color: var(--text-2);
+    }
+    .learned-chip button:hover { background: var(--error-bg); color: var(--error); }
+    .learned-chip button .icon { width: 11px; height: 11px; }
+    .mini-footer { padding-top: 10px; border-top: 1px solid var(--border-1); }
+    .btn.danger-ghost { background: transparent; color: var(--text-1); height: 28px; font-size: 11px; }
+    .btn.danger-ghost:hover { background: var(--error-bg); border-color: var(--error-border); color: var(--error); }
+
+    /* Кнопка «Новый чат» в строке ввода */
+    .ghost-btn {
+      display: inline-flex;
+      align-items: center;
+      gap: 6px;
+      height: 30px;
+      padding: 0 10px 0 8px;
+      border: 1px solid transparent;
+      border-radius: 7px;
+      background: transparent;
+      color: var(--text-2);
+      font-size: 12px;
+      font-weight: 500;
+      white-space: nowrap;
+      transition: all var(--transition);
+    }
+    .ghost-btn:hover { background: var(--bg-2); border-color: var(--border-0); color: var(--text-0); }
+    .ghost-btn:active { transform: scale(0.97); }
     .mini-load-text.error { font-family: var(--font-sans); color: var(--error); line-height: 1.6; }
     @keyframes popIn {
       from { opacity: 0; transform: translateY(-4px) scale(0.98); }
@@ -653,6 +782,9 @@
       color: var(--text-2);
     }
     .legend { display: flex; flex-wrap: wrap; align-items: center; gap: 6px 14px; font-size: 11px; color: var(--text-2); }
+    .msg-meta .meta-accent { color: var(--warning); }
+    .learn-track { max-width: 360px; margin-top: 4px; }
+    .msg .learn-error { color: var(--error); font-size: 13px; }
     .mini-reply-line + .mini-reply-line { margin-top: 0.2rem; }
 
     /* «Рентген»: какие слова прошли цикл размышления, а какие — быстрый проход */
@@ -1118,24 +1250,32 @@
             Обычная<small>поиск по памяти, логика</small>
           </button>
           <button id="modeMiniBtn" type="button" class="mode-btn" role="tab" aria-selected="false">
-            mini · LLM<small>собеседник, 36 млн параметров</small>
+            mini · LLM<small>собеседник, учится новому</small>
           </button>
         </div>
       </div>
 
-      <!-- Панель mini: загрузка весов или настройки ответа -->
+      <!-- Панель mini. Пока весов нет — компактная карточка загрузки. Когда модель готова — одна тонкая строка
+           состояния; настройки, обучение и предупреждения раскрываются по нажатию (выбор запоминается). -->
       <div id="miniPanel" class="mini-panel hidden">
-        <div id="miniLoadBox">
-          <p class="mini-desc">
-            <b>mini2</b> — генеративная модель-собеседник (36 млн параметров): обучена на 2.3 ГБ русских субтитров,
-            а затем дообучена вести диалог. Отвечает коротко, помнит, что вы сказали в разговоре, отвечает сразу на
-            несколько вопросов и понимает, о чём шла речь («А что в нём интересного?»), честно говорит «не знаю».
-            Веса (8.0 МБ) загружаются один раз и сохраняются в браузере.
-          </p>
+        <div id="miniLoadBox" class="mini-load">
+          <div>
+            <div class="card-title">mini3 — собеседник, который учится</div>
+            <div class="subtle">36 млн параметров · 10.4 МБ · скачивается один раз и хранится в браузере</div>
+          </div>
+          <details class="mini-about">
+            <summary>Что умеет</summary>
+            <p>
+              Объясните ей новое слово («Курдяпа — это маленькая птица…») — она сама задаст себе вопросы, отрастит
+              новые нейроны и запомнит навсегда, не трогая старые знания. Обучена на 2.3 ГБ русских субтитров и
+              дообучена вести диалог: отвечает коротко, помнит разговор, отвечает сразу на несколько вопросов,
+              честно говорит «не знаю».
+            </p>
+          </details>
           <div class="mini-row">
             <button id="miniDownloadBtn" type="button" class="btn primary">
               <svg class="icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4" /><polyline points="7 10 12 15 17 10" /><line x1="12" x2="12" y1="15" y2="3" /></svg>
-              Скачать собеседника с GitHub · 8.0 МБ
+              Скачать mini3 с GitHub · 10.4 МБ
             </button>
             <button id="miniPickBtn" type="button" class="btn">
               <svg class="icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="m6 14 1.5-2.9A2 2 0 0 1 9.24 10H20a2 2 0 0 1 1.94 2.5l-1.54 6a2 2 0 0 1-1.95 1.5H4a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h3.9a2 2 0 0 1 1.69.9l.81 1.2a2 2 0 0 0 1.67.9H18a2 2 0 0 1 2 2v2" /></svg>
@@ -1143,46 +1283,72 @@
             </button>
             <input id="miniFileInput" type="file" accept=".npz,application/octet-stream" class="hidden" />
           </div>
-          <div id="miniLoadProgress" class="hidden" role="status" aria-live="polite">
-            <div class="progress-track"><div id="miniLoadFill" class="progress-fill"></div></div>
-            <div id="miniLoadText" class="mini-load-text"></div>
+        </div>
+
+        <div id="miniReadyBox" class="mini-ready hidden">
+          <button id="miniPanelToggle" type="button" class="mini-bar" aria-expanded="false" aria-controls="miniSettings" title="Настройки mini">
+            <span id="miniStatusText" class="mini-status">mini готова</span>
+            <span id="miniAlertBadge" class="mini-alert hidden"></span>
+            <svg class="icon mini-chevron" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="m6 9 6 6 6-6" /></svg>
+          </button>
+          <div class="mini-collapse">
+            <div id="miniSettings" class="mini-settings">
+              <div id="miniUpdateBox" class="hidden notice">
+                В браузере сохранена старая версия собеседника. На GitHub есть новая — mini3: умеет учиться новому прямо
+                в браузере (объясните ей слово — она сама отрастит нейроны и запомнит).
+                <div><button id="miniUpdateBtn" type="button" class="btn primary">Обновить · 10.4 МБ</button></div>
+              </div>
+              <div id="miniUpgradeBox" class="hidden notice">
+                Загружена старая модель-продолжатель субтитров: она не отвечает на вопросы, а дописывает сцену.
+                <div><button id="miniUpgradeBtn" type="button" class="btn primary">Скачать собеседника</button></div>
+              </div>
+
+              <div id="miniLearnBox" class="mini-section hidden">
+                <label for="miniLearnInput" class="section-label">Научить новому слову</label>
+                <textarea id="miniLearnInput" rows="2" class="field-textarea mini-learn-input" placeholder="Курдяпа — это маленькая птица синего цвета. Она живёт в лесу."></textarea>
+                <div class="mini-row mini-learn-row">
+                  <button id="miniLearnGoBtn" type="button" class="btn primary">Выучить</button>
+                  <span class="subtle">«Слово — это …», можно добавить цвет, где живёт, размер. 1–5 минут, «Стоп» прерывает. Можно и «/запомни …» прямо в чате.</span>
+                </div>
+                <div class="section-label">Выучено</div>
+                <div id="miniModulesList" class="learned-list"></div>
+              </div>
+
+              <div class="mini-section">
+                <div class="section-label">Ответы</div>
+                <div class="mini-row mini-controls">
+                  <label id="miniLinesLabel">Реплик
+                    <select id="miniLinesSelect" class="field-select sm">
+                      <option value="1">1</option>
+                      <option value="2" selected>2</option>
+                      <option value="3">3</option>
+                      <option value="5">5</option>
+                    </select>
+                  </label>
+                  <label>Фантазия
+                    <select id="miniTempSelect" class="field-select sm">
+                      <option value="0.5">сдержанно</option>
+                      <option value="0.8" selected>обычно</option>
+                      <option value="1.0">смело</option>
+                    </select>
+                  </label>
+                </div>
+              </div>
+
+              <div class="mini-row mini-footer">
+                <button id="miniForgetBtn" type="button" class="btn danger-ghost" title="Удалить сохранённые веса из памяти браузера">
+                  <svg class="icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M3 6h18" /><path d="M19 6v14c0 1-1 2-2 2H7c-1 0-2-1-2-2V6" /><path d="M8 6V4c0-1 1-2 2-2h4c1 0 2 1 2 2v2" /><line x1="10" x2="10" y1="11" y2="17" /><line x1="14" x2="14" y1="11" y2="17" /></svg>
+                  Удалить веса из браузера
+                </button>
+                <span class="subtle">выученные слова останутся, веса придётся скачать заново</span>
+              </div>
+            </div>
           </div>
         </div>
-        <div id="miniReadyBox" class="hidden">
-          <div id="miniStatusText" class="mini-status">mini готова</div>
-          <div id="miniUpdateBox" class="hidden notice">
-            В браузере сохранена старая версия собеседника. На GitHub есть новая: отвечает сразу на несколько вопросов
-            в одном сообщении и понимает, о чём шла речь («А что в нём интересного?»).
-            <div><button id="miniUpdateBtn" type="button" class="btn primary">Обновить · 8.0 МБ</button></div>
-          </div>
-          <div id="miniUpgradeBox" class="hidden notice">
-            Загружена старая модель-продолжатель субтитров: она не отвечает на вопросы, а дописывает сцену.
-            <div><button id="miniUpgradeBtn" type="button" class="btn primary">Скачать собеседника</button></div>
-          </div>
-          <div class="mini-row mini-controls">
-            <label id="miniLinesLabel">Реплик
-              <select id="miniLinesSelect" class="field-select sm">
-                <option value="1">1</option>
-                <option value="2" selected>2</option>
-                <option value="3">3</option>
-                <option value="5">5</option>
-              </select>
-            </label>
-            <label>Фантазия
-              <select id="miniTempSelect" class="field-select sm">
-                <option value="0.5">сдержанно</option>
-                <option value="0.8" selected>обычно</option>
-                <option value="1.0">смело</option>
-              </select>
-            </label>
-            <span class="spacer"></span>
-            <button id="miniNewChatBtn" type="button" class="icon-btn" title="Начать разговор заново (mini забудет, что вы говорили)" aria-label="Начать разговор заново">
-              <svg class="icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M3 12a9 9 0 1 0 9-9 9.75 9.75 0 0 0-6.74 2.74L3 8" /><path d="M3 3v5h5" /></svg>
-            </button>
-            <button id="miniForgetBtn" type="button" class="icon-btn danger" title="Удалить сохранённые веса из памяти браузера" aria-label="Удалить веса mini из памяти браузера">
-              <svg class="icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M18 6 6 18" /><path d="m6 6 12 12" /></svg>
-            </button>
-          </div>
+        <!-- Прогресс скачивания/загрузки весов — виден и при первой загрузке, и при обновлении -->
+        <div id="miniLoadProgress" class="mini-progress hidden" role="status" aria-live="polite">
+          <div class="progress-track"><div id="miniLoadFill" class="progress-fill"></div></div>
+          <div id="miniLoadText" class="mini-load-text"></div>
         </div>
       </div>
 
@@ -1239,6 +1405,8 @@
         <!-- Быстрые реплики для mini-собеседника -->
         <div id="miniChatPromptsBar" class="chip-scroll no-scrollbar hidden">
           <button type="button" class="chip-btn" data-prompt="Привет! Как тебя зовут?">Привет! Как тебя зовут?</button>
+          <button type="button" class="chip-btn" data-prompt="/запомни Курдяпа — это маленькая птица синего цвета. Она живёт в лесу.">Научить: курдяпа</button>
+          <button type="button" class="chip-btn" data-prompt="Что такое курдяпа?">Что такое курдяпа?</button>
           <button type="button" class="chip-btn" data-prompt="Что ты умеешь?">Что ты умеешь?</button>
           <button type="button" class="chip-btn" data-prompt="Меня зовут Аня.">Меня зовут Аня.</button>
           <button type="button" class="chip-btn" data-prompt="Как меня зовут?">Как меня зовут?</button>
@@ -1275,8 +1443,10 @@
             aria-label="Сообщение"
           />
           <div class="chat-input-bar">
-            <button id="clearChatBtn" type="button" class="icon-btn danger" title="Очистить историю чата" aria-label="Очистить историю чата">
-              <svg class="icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M3 6h18" /><path d="M19 6v14c0 1-1 2-2 2H7c-1 0-2-1-2-2V6" /><path d="M8 6V4c0-1 1-2 2-2h4c1 0 2 1 2 2v2" /><line x1="10" x2="10" y1="11" y2="17" /><line x1="14" x2="14" y1="11" y2="17" /></svg>
+            <!-- Одна кнопка на всё: очищает ленту и память модели (что ей говорили в этом разговоре) -->
+            <button id="clearChatBtn" type="button" class="ghost-btn" title="Новый чат: очистить ленту и память модели о разговоре">
+              <svg class="icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M21 15a2 2 0 0 1-2 2H7l-4 4V5a2 2 0 0 1 2-2h14a2 2 0 0 1 2 2z" /><path d="M12 7v6" /><path d="M9 10h6" /></svg>
+              <span>Новый чат</span>
             </button>
             <span class="input-hint">Enter — отправить</span>
             <button id="sendMsgBtn" type="submit" class="send-btn" aria-label="Отправить">
@@ -1581,6 +1751,10 @@
           data = new Float32Array(body.buffer, 0, count);
         } else if (descr === "|u1") {
           data = new Uint8Array(body.buffer, 0, count);
+        } else if (descr === "|i1") {                                     // признаки самообучения (int8)
+          data = new Int8Array(body.buffer, 0, count);
+        } else if (descr === "<i2") {
+          data = new Int16Array(body.buffer, 0, count);
         } else if (descr === "<i8") {
           const i64 = new BigInt64Array(body.buffer, 0, count);
           data = Array.from(i64, Number);
@@ -2024,6 +2198,33 @@
             for (let i = 0; i < u.length; i++) { const r = u[i] > 0 ? u[i] : 0; u[i] = r * r; }
             this.down.forward(u, this.o);
             for (let i = 0; i < D; i++) x[i] += this.o[i];
+            // самообучение (mini3): признаки последнего слоя и новые нейроны модулей знаний
+            if (this.capture) { this.capture.h.set(this.h); this.capture.y.set(x); }
+            if (this.extra) this.applyExtra(x);
+          }
+        }
+
+        // x += down · relu(up · h + b)² по нейронам включённых модулей (h — нормированный вход MLP)
+        applyExtra(x) {
+          const ex = this.extra, D = this.D, h = this.h;
+          for (const mod of ex.modules) {
+            if (mod.enabled === false || (ex.active && !ex.active.has(mod.id))) continue;
+            for (const ch of mod.chunks) {
+              const k = ch.k;
+              if (!ex.buf || ex.buf.length < k) ex.buf = new Float32Array(Math.max(k, 64));
+              const a = ex.buf;
+              for (let j = 0; j < k; j++) {
+                let s = ch.bias[j];
+                for (let i = 0, b = j * D; i < D; i++) s += ch.up[b + i] * h[i];
+                const r = s > 0 ? s : 0;
+                a[j] = r * r;
+              }
+              for (let i = 0; i < D; i++) {
+                let s = 0;
+                for (let j = 0, b = i * k; j < k; j++) s += ch.down[b + j] * a[j];
+                x[i] += s;
+              }
+            }
           }
         }
       }
@@ -2117,6 +2318,8 @@
           this.routerB = T.get("core.router.bias").data[0];
           this.stepEmb = T.get("core.step_emb").data;
           this.finalNorm = T.get("final_norm.weight").data;
+          const lastDec = this.decoder[this.decoder.length - 1];
+          this.tail = lastDec instanceof AttentionLayer && lastDec.hasMlp ? lastDec : null;   // сюда растут новые нейроны
           this.x = new Float32Array(this.D);
           this.z = new Float32Array(this.D);
           this.zin = new Float32Array(this.D);
@@ -2166,6 +2369,7 @@
           }
           x.set(z);
           this.decoder.forEach((l, i) => l.step(x, st.dec[i]));
+          if (!logitsOut) { st.pos++; return depth; }                  // нужны только признаки (самообучение)
           rmsNorm(x, this.finalNorm, this.hn, this.cfg.rms_norm_eps);
           const hn = this.hn, E = this.emb, V = this.V;                // выход связан с эмбеддингом (weight tying)
           let v = 0;
@@ -2220,11 +2424,33 @@
           if (!(chat.userId >= tokenizer.vocabSize && chat.botId < cfg.vocab_size)) throw new Error("Повреждены ролевые токены чат-модели");
         }
         for (const [name, t] of T) {
+          if (name.startsWith("selflearn.")) continue;
           if (name.endsWith(".weight.shape")) meta.params += t.data.reduce((a, b) => a * b, 1);
           else if (!name.includes(".weight.") && !name.startsWith("meta.") && name !== "config" && name !== "tokenizer_proto") meta.params += t.data.length;
         }
+        // mini3: данные самообучения — признаки последнего слоя старых диалогов и вопросов о невыученных словах (int8)
+        // и 32 самых вероятных слова исходной модели в каждой позиции (selflearn_tail.py export)
+        let selflearn = null;
+        if (chat && T.has("meta.selflearn") && T.has("selflearn.replay_h") && model.tail) {
+          const D = cfg.d_model;
+          const deq = (qName, sName) => {
+            const q = T.get(qName).data, sc = T.get(sName).data, out = new Float32Array(q.length);
+            for (let r = 0; r < sc.length; r++) for (let j = 0, b = r * D; j < D; j++) out[b + j] = q[b + j] * sc[r];
+            return out;
+          };
+          const top = T.get("selflearn.replay_top_idx");
+          selflearn = {
+            meta: JSON.parse(T.get("meta.selflearn").data),
+            N: top.shape[0], K: top.shape[1],
+            H: deq("selflearn.replay_h", "selflearn.replay_h_scale"),
+            Y: deq("selflearn.replay_y", "selflearn.replay_y_scale"),
+            topIdx: Int32Array.from(top.data),
+            topLp: Float32Array.from(T.get("selflearn.replay_top_lp").data),
+            neg: Uint8Array.from(T.get("selflearn.replay_neg").data)
+          };
+        }
         onProgress(1, "Готово");
-        return { model, tokenizer, cfg, meta, chat };
+        return { model, tokenizer, cfg, meta, chat, selflearn };
       }
 
       // ------------------------------------------------------------------ выбор следующего токена
@@ -2281,6 +2507,534 @@
       }
 
       return { load, sampleToken, mulberry32, Tokenizer, readZip, parseNpy };
+    })();
+
+    // =============================================================================================
+    // САМООБУЧЕНИЕ mini3 (selflearn_tail.py — тот же расчёт на Python; PLAN_MULTIMODULE_RU.md, раздел 1)
+    // Модель сама задаёт себе вопросы о присланном тексте, отвечает на них, видя текст (учитель — она сама), и
+    // учит НОВЫЕ нейроны последнего слоя отвечать так же без текста. Старые веса не меняются. Нейроны растут, пока
+    // не пройдёт самопроверка. Признаки старых диалогов («не менять старое») лежат в файле модели.
+    // =============================================================================================
+    const SLRSelf = (() => {
+      const cap = s => (s ? s[0].toUpperCase() + s.slice(1) : s);
+      const yieldNow = () => new Promise(r => setTimeout(r, 0));
+
+      // ------------------------------------------------------------------ 1. новые слова и вопросы о них
+      const DEF_RE = /^\s*([А-ЯЁA-Z][а-яёa-z-]+)\s+[—–-]\s+(?:это\s+)?(.+)$/u;
+      const PLACE_RE = /(?<![а-яё])(живёт|живет|растёт|растет|лежит|ездит|бывает|водится|стоит|работает)\s+((?:в|во|на|у|по|под)\s+[а-яё]+)/u;
+      const COLOR_RE = /(?<![а-яё])([а-яё]+(?:ого|его))\s+цвета(?![а-яё])/u;
+      const SIZE_RE = /(?<![а-яё])(маленьк|крошечн|больш|огромн)/u;
+
+      // «Слово — это …» начинает новое слово; следующие предложения без такого начала — о нём же (как facts_from_text)
+      function factsFromText(text) {
+        const facts = [];
+        const clean = String(text).replace(/\s+/g, " ").trim();                  // реплика — одна строка (clean_turn)
+        for (const sent of clean.split(/(?<=[.!?])\s+/u)) {
+          if (!sent) continue;
+          const m = DEF_RE.exec(sent);
+          if (m) facts.push({ word: m[1].toLowerCase(), text: sent });
+          else if (facts.length) facts[facts.length - 1].text += " " + sent;
+        }
+        return facts;
+      }
+
+      // Инструмент вопросов (как text_questions в self_grow.py): общие вопросы + вопросы о найденных признаках
+      function textQuestions(word, text) {
+        const w = word.toLowerCase(), W = cap(w), t = text.toLowerCase();
+        const qs = [[`Что такое ${w}?`, "что"], [`Расскажи про слово «${w}».`, "что"], [`${W} — это что?`, "что"],
+          [`Что ты знаешь про слово «${w}»?`, "что"], [`Объясни ещё раз, что такое ${w}.`, "что"],
+          [`Так что такое ${w}?`, "что"], [`Ты знаешь, что такое ${w}?`, "что"], [`Что значит слово «${w}»?`, "что"]];
+        if (COLOR_RE.test(t)) qs.push([`Какого цвета ${w}?`, "цвет"], [`${W} какого цвета?`, "цвет"], [`А какого цвета ${w}?`, "цвет"]);
+        const m = PLACE_RE.exec(t);
+        if (m) {
+          const v = m[1];
+          qs.push([`Где ${v} ${w}?`, "место"], [`А где ${v} ${w}?`, "место"], [`В каком месте ${v} ${w}?`, "место"],
+            [`Где обычно ${v} ${w}?`, "место"]);
+        }
+        if (SIZE_RE.test(t)) qs.push([`Какой величины ${w}?`, "размер"], [`${W} какой величины?`, "размер"]);
+        return qs;
+      }
+
+      // Есть ли в сообщении выученное слово (с грубым учётом окончаний) — как lexical_route в orchestrator.py
+      function mentions(text, words) {
+        const t = String(text).toLowerCase().replace(/ё/g, "е");
+        return words.some(w0 => {
+          let s = w0.toLowerCase().replace(/ё/g, "е");
+          if (s.length > 4 && "аяьй".includes(s[s.length - 1])) s = s.slice(0, -1);
+          const esc = s.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+          return new RegExp(`(?<![а-яёa-z0-9])${esc}`, "u").test(t);
+        });
+      }
+
+      // Похожие несуществующие слова (как near_misses в selflearn_tail.py): 1–2 буквы основы заменены (гласная на
+      // гласную, согласная на согласную), окончание не трогаем. На них модель должна отвечать как без модуля.
+      const VOWELS = "аеиоуыэюя", CONSONANTS = "бвгджзклмнпрстфхцчшщ";
+      function nearMisses(word, n, rnd) {
+        const w = word.toLowerCase(), out = [];
+        for (let tries = 0; tries < 50 * n && out.length < n; tries++) {
+          const chars = [...w];
+          const pos = chars.slice(0, -2).map((ch, i) => (VOWELS.includes(ch) || CONSONANTS.includes(ch) ? i : -1)).filter(i => i >= 0);
+          if (!pos.length) break;
+          const k = Math.min(pos.length, 1 + (rnd() < 0.5 ? 1 : 0));
+          for (let t = 0; t < k; t++) {
+            const pi = pos.splice(Math.floor(rnd() * pos.length), 1)[0];
+            const pool = [...(VOWELS.includes(chars[pi]) ? VOWELS : CONSONANTS)].filter(c => c !== chars[pi]);
+            chars[pi] = pool[Math.floor(rnd() * pool.length)];
+          }
+          const v = chars.join("");
+          if (v !== w && !out.includes(v)) out.push(v);
+        }
+        return out;
+      }
+
+      // ------------------------------------------------------------------ 2. проходы сети
+      function cloneState(st) {
+        const c = o => {
+          if (o instanceof Float32Array) return o.slice();
+          if (Array.isArray(o)) return o.map(c);
+          if (o && typeof o === "object") { const r = {}; for (const k in o) r[k] = c(o[k]); return r; }
+          return o;
+        };
+        return c(st);
+      }
+
+      function argmaxBanned(logits, banned) {
+        let bi = -1, bv = -Infinity;
+        for (let i = 0; i < logits.length; i++) {
+          if (logits[i] > bv && !banned.has(i)) { bv = logits[i]; bi = i; }
+        }
+        return bi;
+      }
+
+      // Жадный ответ (как учитель в self_grow.py): до <n>, без ролевых и служебных токенов
+      async function greedyReply(bundle, st, logits, maxNew, isCancelled) {
+        const { model, tokenizer: tok, chat } = bundle;
+        const banned = new Set([tok.eosId, tok.bosId, tok.unkId, chat.userId, chat.botId].filter(x => x >= 0));
+        const out = [];
+        for (let n = 0; n < maxNew; n++) {
+          if (n === 0) banned.add(tok.nlId);
+          const t = argmaxBanned(logits, banned);
+          if (n === 0) banned.delete(tok.nlId);
+          if (t === tok.nlId) break;
+          out.push(t);
+          model.step(t, st, logits);
+          if ((n & 3) === 3) { await yieldNow(); if (isCancelled()) break; }
+        }
+        return out;
+      }
+
+      // Признаки последнего слоя для ответа: на позициях <bot> и каждого токена ответа (их предсказывает модель)
+      async function stepAll(model, ids, st, lg) {                     // проход по токенам, не занимая страницу надолго
+        let last = performance.now();
+        for (const t of ids) {
+          model.step(t, st, lg);
+          if (performance.now() - last > 40) { await yieldNow(); last = performance.now(); }
+        }
+      }
+
+      async function captureReply(bundle, qIds, ansIds) {
+        const { model, tokenizer: tok, chat } = bundle;
+        const D = model.D, tail = model.tail;
+        const st = model.newState();
+        await stepAll(model, [chat.userId, ...qIds, tok.nlId], st, null);
+        const feed = [chat.botId, ...ansIds], targets = [...ansIds, tok.nlId];
+        const H = new Float32Array(feed.length * D), Y = new Float32Array(feed.length * D);
+        tail.capture = { h: new Float32Array(D), y: new Float32Array(D) };
+        try {
+          let last = performance.now();
+          for (let j = 0; j < feed.length; j++) {
+            model.step(feed[j], st, null);
+            H.set(tail.capture.h, j * D);
+            Y.set(tail.capture.y, j * D);
+            if (performance.now() - last > 40) { await yieldNow(); last = performance.now(); }
+          }
+        } finally {
+          tail.capture = null;
+        }
+        return { H, Y, targets };
+      }
+
+      // ------------------------------------------------------------------ 3. выход сети по сохранённым признакам
+      function headOf(bundle) {
+        const m = bundle.model;
+        return { E: m.emb, fw: m.finalNorm, eps: m.cfg.rms_norm_eps, D: m.D, V: m.V };
+      }
+
+      function chunkForward(ch, h, hOff, D, aPre, a, e) {             // e += down · relu(up·h + b)²
+        const k = ch.k, up = ch.up, down = ch.down;
+        for (let j = 0; j < k; j++) {
+          let s = ch.bias[j];
+          for (let i = 0, b = j * D; i < D; i++) s += up[b + i] * h[hOff + i];
+          aPre[j] = s;
+          const r = s > 0 ? s : 0;
+          a[j] = r * r;
+        }
+        for (let i = 0; i < D; i++) {
+          let s = 0;
+          for (let j = 0, b = i * k; j < k; j++) s += down[b + j] * a[j];
+          e[i] += s;
+        }
+      }
+
+      function normedOut(hd, chunks, H, Y, p, z, n, bufs) {          // z = y + e, n = RMSNorm(z) — возвращает r
+        const D = hd.D;
+        for (let i = 0; i < D; i++) z[i] = Y[p * D + i];
+        if (chunks) for (let c = 0; c < chunks.length; c++) chunkForward(chunks[c], H, p * D, D, bufs.aPre[c], bufs.a[c], z);
+        let ss = 0;
+        for (let i = 0; i < D; i++) ss += z[i] * z[i];
+        const r = 1 / Math.sqrt(ss / D + hd.eps);
+        for (let i = 0; i < D; i++) n[i] = z[i] * r * hd.fw[i];
+        return r;
+      }
+
+      function makeBufs(chunks, D) {
+        return { aPre: chunks.map(c => new Float32Array(c.k)), a: chunks.map(c => new Float32Array(c.k)),
+          z: new Float32Array(D), n: new Float32Array(D), dn: new Float32Array(D), dz: new Float32Array(D) };
+      }
+
+      // Точные логиты по всему словарю; fn(p, logits) для каждой позиции
+      async function forEachFullLogits(hd, chunks, H, Y, positions, fn) {
+        const { E, D, V } = hd, bufs = makeBufs(chunks || [], D), lg = new Float32Array(V);
+        let last = performance.now();
+        for (const p of positions) {
+          normedOut(hd, chunks, H, Y, p, bufs.z, bufs.n, bufs);
+          const n = bufs.n;
+          for (let v = 0; v < V; v++) {
+            let s = 0;
+            for (let i = 0, b = v * D; i < D; i++) s += E[b + i] * n[i];
+            lg[v] = s;
+          }
+          fn(p, lg);
+          if (performance.now() - last > 40) { await yieldNow(); last = performance.now(); }
+        }
+      }
+
+      function topIdx(lg, k) {
+        const idx = [];
+        for (let i = 0; i < lg.length; i++) {
+          const v = lg[i];
+          if (idx.length === k && v <= lg[idx[k - 1]]) continue;
+          let pos = idx.length;
+          while (pos > 0 && lg[idx[pos - 1]] < v) pos--;
+          idx.splice(pos, 0, i);
+          if (idx.length > k) idx.pop();
+        }
+        return idx;
+      }
+
+      // ------------------------------------------------------------------ 4. шаг обучения (ручной обратный проход)
+      // Ошибка по выборке словаря — как sampled_logz / batch_loss в selflearn_tail.py.
+      function posLoss(hd, chunks, H, Y, p, cand, randIdx, kind, refLp, scale, grads, bufs, dupBuf) {
+        const { E, D, V, fw } = hd;
+        const Kc = cand.length, m = randIdx.length, K = Kc + m;
+        const r = normedOut(hd, chunks, H, Y, p, bufs.z, bufs.n, bufs);
+        const z = bufs.z, n = bufs.n;
+        const l = new Float64Array(K), w = new Float64Array(K);
+        const uniq = new Set();
+        for (let c = 0; c < Kc; c++) {
+          const id = cand[c];
+          w[c] = uniq.has(id) ? -Infinity : 0;                        // повтор среди выбранных — не считаем дважды
+          uniq.add(id);
+        }
+        let mEff = 0;
+        for (let j = 0; j < m; j++) { dupBuf[j] = uniq.has(randIdx[j]) ? 1 : 0; if (!dupBuf[j]) mEff++; }
+        const lw = Math.log((V - uniq.size) / Math.max(1, mEff));
+        for (let j = 0; j < m; j++) w[Kc + j] = dupBuf[j] ? -Infinity : lw;
+        let mx = -Infinity;
+        for (let c = 0; c < K; c++) {
+          const id = c < Kc ? cand[c] : randIdx[c - Kc];
+          let s = 0;
+          for (let i = 0, b = id * D; i < D; i++) s += E[b + i] * n[i];
+          l[c] = s;
+          if (w[c] !== -Infinity && s + w[c] > mx) mx = s + w[c];
+        }
+        let se = 0;
+        for (let c = 0; c < K; c++) if (w[c] !== -Infinity) se += Math.exp(l[c] + w[c] - mx);
+        const logZ = mx + Math.log(se);
+        const g = new Float64Array(K);
+        let loss;
+        if (kind === "ce") {
+          for (let c = 0; c < K; c++) g[c] = w[c] === -Infinity ? 0 : Math.exp(l[c] + w[c] - logZ);
+          g[0] -= 1;
+          loss = logZ - l[0];
+        } else {
+          let Q = 0;
+          loss = 0;
+          for (let c = 0; c < Kc; c++) { const q = Math.exp(refLp[c]); Q += q; loss += q * (refLp[c] - (l[c] - logZ)); }
+          for (let c = 0; c < K; c++) g[c] = (w[c] === -Infinity ? 0 : Q * Math.exp(l[c] + w[c] - logZ)) - (c < Kc ? Math.exp(refLp[c]) : 0);
+        }
+        if (!grads) return loss;
+        const dn = bufs.dn, dz = bufs.dz;
+        dn.fill(0);
+        for (let c = 0; c < K; c++) {
+          const gc = g[c] * scale;
+          if (gc === 0) continue;
+          const id = c < Kc ? cand[c] : randIdx[c - Kc];
+          for (let i = 0, b = id * D; i < D; i++) dn[i] += gc * E[b + i];
+        }
+        let uz = 0;
+        for (let i = 0; i < D; i++) { dn[i] *= fw[i]; uz += dn[i] * z[i]; }
+        const r3 = r * r * r / D;
+        for (let i = 0; i < D; i++) dz[i] = r * dn[i] - r3 * z[i] * uz;
+        for (let ci = 0; ci < chunks.length; ci++) {
+          const gi = grads[ci];
+          if (!gi) continue;                                           // замороженный кусок
+          const ch = chunks[ci], k = ch.k, a = bufs.a[ci], aPre = bufs.aPre[ci];
+          const da = new Float64Array(k);
+          for (let i = 0; i < D; i++) {
+            const d = dz[i], b = i * k;
+            if (d === 0) continue;
+            for (let j = 0; j < k; j++) { gi.down[b + j] += d * a[j]; da[j] += ch.down[b + j] * d; }
+          }
+          for (let j = 0; j < k; j++) {
+            const dp = aPre[j] > 0 ? da[j] * 2 * aPre[j] : 0;
+            if (dp === 0) continue;
+            gi.bias[j] += dp;
+            for (let i = 0, b = j * D; i < D; i++) gi.up[b + i] += dp * H[p * D + i];
+          }
+        }
+        return loss;
+      }
+
+      class Adam {                                                   // как Adam в selflearn_tail.py
+        constructor(params, b1 = 0.9, b2 = 0.98, eps = 1e-8) {
+          this.params = params; this.b1 = b1; this.b2 = b2; this.eps = eps; this.t = 0;
+          this.m = params.map(p => new Float32Array(p.length));
+          this.v = params.map(p => new Float32Array(p.length));
+        }
+        step(grads, lr) {
+          let ss = 0;
+          for (const g of grads) for (let i = 0; i < g.length; i++) ss += g[i] * g[i];
+          const norm = Math.sqrt(ss), clip = Math.min(1, 1 / (norm + 1e-6));
+          this.t++;
+          const c1 = 1 - Math.pow(this.b1, this.t), c2 = 1 - Math.pow(this.b2, this.t);
+          this.params.forEach((p, k) => {
+            const g = grads[k], m = this.m[k], v = this.v[k];
+            for (let i = 0; i < p.length; i++) {
+              const gi = g[i] * clip;
+              m[i] = this.b1 * m[i] + (1 - this.b1) * gi;
+              v[i] = this.b2 * v[i] + (1 - this.b2) * gi * gi;
+              p[i] -= lr * (m[i] / c1) / (Math.sqrt(v[i] / c2) + this.eps);
+            }
+          });
+          return norm;
+        }
+      }
+
+      const lrAt = (step, steps, lr) => lr * Math.min(1, (step + 1) / 10) * (0.1 + 0.9 * 0.5 * (1 + Math.cos(Math.PI * step / Math.max(1, steps))));
+
+      function chunkParams(ch) { return [ch.up, ch.bias, ch.down]; }
+      function zeroGrads(chunks) { return chunks.map(ch => ({ up: new Float32Array(ch.up.length), bias: new Float32Array(ch.k), down: new Float32Array(ch.down.length) })); }
+
+      // Один шаг обучения: stud = {H, Y, cand, Kc}, rep = {H, Y, idx, lp, K}, индексы позиций и случайные слова заданы
+      function trainStep(hd, chunks, stud, studIdx, rep, repIdx, randIdx, adam, lr, klCoef) {
+        const grads = zeroGrads(chunks), bufs = makeBufs(chunks, hd.D), dup = new Uint8Array(randIdx.length);
+        let ce = 0, kl = 0;
+        for (const p of studIdx) {
+          const cand = stud.cand.subarray(p * stud.Kc, (p + 1) * stud.Kc);
+          ce += posLoss(hd, chunks, stud.H, stud.Y, p, cand, randIdx, "ce", null, 1 / studIdx.length, grads, bufs, dup);
+        }
+        if (rep && repIdx.length && klCoef > 0) {
+          for (const p of repIdx) {
+            const cand = rep.idx.subarray(p * rep.K, (p + 1) * rep.K), lp = rep.lp.subarray(p * rep.K, (p + 1) * rep.K);
+            kl += posLoss(hd, chunks, rep.H, rep.Y, p, cand, randIdx, "kl", lp, klCoef / repIdx.length, grads, bufs, dup);
+          }
+        }
+        const flat = [];
+        grads.forEach(g => flat.push(g.up, g.bias, g.down));
+        adam.step(flat, lr);
+        return { ce: ce / studIdx.length, kl: repIdx.length ? kl / repIdx.length : 0 };
+      }
+
+      function newChunk(D, k, biasInit, rnd) {
+        const up = new Float32Array(k * D), s = 1 / Math.sqrt(D);
+        for (let i = 0; i < up.length; i += 2) {                        // нормальное распределение (Бокс — Мюллер)
+          const u1 = Math.max(rnd(), 1e-12), u2 = rnd(), rr = Math.sqrt(-2 * Math.log(u1));
+          up[i] = rr * Math.cos(2 * Math.PI * u2) * s;
+          if (i + 1 < up.length) up[i + 1] = rr * Math.sin(2 * Math.PI * u2) * s;
+        }
+        return { k, up, bias: new Float32Array(k).fill(biasInit), down: new Float32Array(D * k) };
+      }
+
+      // ------------------------------------------------------------------ 5. всё вместе
+      // learn(bundle, text) -> модуль { id, words, texts, chunks, report }. onProgress(доля, текст); isCancelled().
+      async function learn(bundle, text, { onProgress = () => {}, isCancelled = () => false, seed = 1 } = {}) {
+        const sl = bundle.selflearn;
+        if (!sl) throw new Error("В этих весах нет данных самообучения — нужна модель mini3");
+        const st = { ...sl.meta.settings };
+        const { model, tokenizer: tok } = bundle;
+        const hd = headOf(bundle), D = hd.D;
+        const facts = factsFromText(text);
+        if (!facts.length) throw new Error("Не нашёл определений вида «Слово — это …». Например: «Курдяпа — это маленькая птица синего цвета. Она живёт в лесу.»");
+        const t0 = performance.now();
+        const rnd = SLRMini.mulberry32(seed);
+        // учитель — сама модель, видя объяснение (новые нейроны выключены)
+        const items = [];
+        for (const f of facts) for (const [q, kind] of textQuestions(f.word, f.text)) items.push({ f, q, kind });
+        const savedActive = model.tail.extra ? model.tail.extra.active : null;
+        if (model.tail.extra) model.tail.extra.active = new Set();
+        const lg = new Float32Array(hd.V);
+        try {
+          for (let fi = 0; fi < facts.length; fi++) {
+            const f = facts[fi];
+            const prefix = [bundle.chat.userId, ...tok.encode(f.text)];
+            const st0 = model.newState();
+            await stepAll(model, prefix, st0, lg);
+            const lg0 = lg.slice();
+            for (const it of items.filter(x => x.f === f)) {
+              if (isCancelled()) throw new Error("остановлено");
+              const full = tok.encode(f.text + " " + it.q);
+              const shared = full.length > prefix.length - 1 && prefix.slice(1).every((t, i) => full[i] === t);
+              let s2, l2 = new Float32Array(hd.V);
+              if (shared) {
+                s2 = cloneState(st0); l2.set(lg0);
+                await stepAll(model, full.slice(prefix.length - 1), s2, l2);
+              } else {
+                s2 = model.newState();
+                await stepAll(model, [bundle.chat.userId, ...full], s2, l2);
+              }
+              await stepAll(model, [tok.nlId, bundle.chat.botId], s2, l2);
+              it.ans = await greedyReply(bundle, s2, l2, 48, isCancelled);
+              it.qIds = tok.encode(it.q);
+              const done = items.filter(x => x.ans).length;
+              onProgress(0.35 * done / items.length, `Учитель отвечает на свои вопросы: ${done} из ${items.length}`);
+            }
+          }
+          // признаки последнего слоя: один проход на каждый вопрос (без объяснения)
+          const nPos = items.reduce((s, it) => s + it.ans.length + 1, 0);
+          const H = new Float32Array(nPos * D), Y = new Float32Array(nPos * D), tgt = new Int32Array(nPos), qOf = new Int32Array(nPos);
+          let p = 0;
+          for (let i = 0; i < items.length; i++) {
+            if (isCancelled()) throw new Error("остановлено");
+            const c = await captureReply(bundle, items[i].qIds, items[i].ans);
+            H.set(c.H, p * D); Y.set(c.Y, p * D);
+            c.targets.forEach((t, j) => { tgt[p + j] = t; qOf[p + j] = i; });
+            p += c.targets.length;
+            onProgress(0.35 + 0.15 * (i + 1) / items.length, `Запоминаю ответы: ${i + 1} из ${items.length}`);
+            await yieldNow();
+          }
+          // свои отложенные вопросы для самопроверки (по доле check_frac у каждого слова)
+          const checkQ = new Set();
+          for (const f of facts) {
+            const idx = items.map((it, i) => (it.f === f ? i : -1)).filter(i => i >= 0);
+            for (let i = idx.length - 1; i > 0; i--) { const j = Math.floor(rnd() * (i + 1)); [idx[i], idx[j]] = [idx[j], idx[i]]; }
+            idx.slice(0, Math.floor(idx.length * st.check_frac)).forEach(i => checkQ.add(i));
+          }
+          const trainPos = [], checkPos = [];
+          for (let i = 0; i < nPos; i++) (checkQ.has(qOf[i]) ? checkPos : trainPos).push(i);
+          // исходная модель на этих позициях: топ-32 (для ошибки по выборке) и «новые для модели» токены
+          const Kc = st.topk + 1, cand = new Int32Array(nPos * Kc), baseArg = new Int32Array(nPos);
+          await forEachFullLogits(hd, null, H, Y, [...Array(nPos).keys()], (pp, l) => {
+            const top = topIdx(l, st.topk);
+            cand[pp * Kc] = tgt[pp];
+            top.forEach((id, j) => { cand[pp * Kc + 1 + j] = id; });
+            baseArg[pp] = top[0];
+            onProgress(0.5 + 0.05 * (pp + 1) / nPos, "Сравниваю с тем, что модель знала раньше…");
+          });
+          const infoCheck = checkPos.filter(i => baseArg[i] !== tgt[i]);
+          const infoTrain = trainPos.filter(i => baseArg[i] !== tgt[i]);
+          const stud = { H, Y, cand, Kc };
+          // похожие несуществующие слова: ответы исходной модели («не знаю») и её распределение в каждой позиции
+          const near = [];
+          const nearWords = st.near_words || 0;
+          for (const f of facts) {
+            for (const v of nearMisses(f.word, nearWords, rnd)) for (const q of [`Что такое ${v}?`, `Какого цвета ${v}?`]) near.push(q);
+          }
+          const nearH = [], nearY = [], nearTop = [], nearLp = [];
+          for (let i = 0; i < near.length; i++) {
+            if (isCancelled()) throw new Error("остановлено");
+            const qIds = tok.encode(near[i]);
+            const s3 = model.newState(), l3 = new Float32Array(hd.V);
+            await stepAll(model, [bundle.chat.userId, ...qIds, tok.nlId, bundle.chat.botId], s3, l3);
+            const ans = await greedyReply(bundle, s3, l3, 32, isCancelled);
+            const c = await captureReply(bundle, qIds, ans);
+            nearH.push(c.H); nearY.push(c.Y);
+            onProgress(0.55 + 0.04 * (i + 1) / near.length, `Учусь не путать с похожими словами: ${i + 1} из ${near.length}`);
+          }
+          const nNear = nearH.reduce((s0, x) => s0 + x.length / D, 0);
+          const repH = new Float32Array((sl.N + nNear) * D), repY = new Float32Array((sl.N + nNear) * D);
+          const repIdxAll = new Int32Array((sl.N + nNear) * sl.K), repLp = new Float32Array((sl.N + nNear) * sl.K);
+          repH.set(sl.H); repY.set(sl.Y); repIdxAll.set(sl.topIdx); repLp.set(sl.topLp);
+          let off = sl.N;
+          for (let i = 0; i < nearH.length; i++) {
+            const n = nearH[i].length / D;
+            repH.set(nearH[i], off * D); repY.set(nearY[i], off * D);
+            off += n;
+          }
+          await forEachFullLogits(hd, null, repH, repY, Array.from({ length: nNear }, (_, j) => sl.N + j), (pp, l) => {
+            let mx = -Infinity;
+            for (let v = 0; v < l.length; v++) if (l[v] > mx) mx = l[v];
+            let se = 0;
+            for (let v = 0; v < l.length; v++) se += Math.exp(l[v] - mx);
+            const lse = mx + Math.log(se);
+            topIdx(l, sl.K).forEach((id, j) => { repIdxAll[pp * sl.K + j] = id; repLp[pp * sl.K + j] = l[id] - lse; });
+          });
+          const rep = { H: repH, Y: repY, idx: repIdxAll, lp: repLp, K: sl.K };
+          const negPos = [], oldPos = [], nearPos = [];
+          for (let i = 0; i < sl.N; i++) (sl.neg[i] ? negPos : oldPos).push(i);
+          for (let j = 0; j < nNear; j++) nearPos.push(sl.N + j);
+          const keepSel = [...negPos.slice(0, st.keep_items / 2), ...oldPos.slice(0, st.keep_items / 2), ...nearPos];
+          // рост нейронов, пока самопроверка не пройдёт
+          const chunks = [], report = { questions: items.length, positions: nPos, checkInformative: infoCheck.length, rounds: [] };
+          let kTotal = 0, kNext = st.k_init;
+          for (let r = 0; r < st.max_rounds; r++) {
+            chunks.push(newChunk(D, kNext, st.bias_init, rnd));
+            kTotal += kNext;
+            const params = [];
+            chunks.forEach(ch => params.push(...chunkParams(ch)));
+            const adam = new Adam(params);
+            let last = performance.now(), loss = { ce: 0, kl: 0 };
+            for (let step = 0; step < st.steps; step++) {
+              if (isCancelled()) throw new Error("остановлено");
+              const bs = Math.min(st.batch, trainPos.length);
+              const nNeg = !oldPos.length ? st.replay_batch : !negPos.length ? 0 : Math.round(st.replay_batch * st.neg_frac);
+              const nNearB = nearPos.length ? Math.floor(nNeg / 2) : 0;      // половина «незнакомых» — похожие слова
+              const studIdx = Array.from({ length: bs }, () => trainPos[Math.floor(rnd() * trainPos.length)]);
+              const repIdx = [...Array.from({ length: nNeg - nNearB }, () => negPos[Math.floor(rnd() * negPos.length)]),
+                ...Array.from({ length: nNearB }, () => nearPos[Math.floor(rnd() * nearPos.length)]),
+                ...Array.from({ length: st.replay_batch - nNeg }, () => oldPos[Math.floor(rnd() * oldPos.length)])];
+              const randIdx = Int32Array.from({ length: st.n_random }, () => Math.floor(rnd() * hd.V));
+              loss = trainStep(hd, chunks, stud, studIdx, rep, repIdx, randIdx, adam, lrAt(step, st.steps, st.lr), st.kl_coef);
+              if (performance.now() - last > 40) {
+                onProgress(0.55 + 0.4 * (r + (step + 1) / st.steps) / st.max_rounds,
+                  `Учу ${kTotal} новых нейронов: шаг ${step + 1} из ${st.steps}, ошибка ${loss.ce.toFixed(3)}`);
+                await yieldNow();
+                last = performance.now();
+              }
+            }
+            // самопроверка без разметки: новые токены своих отложенных вопросов + не изменилось ли старое
+            let hitC = 0, hitT = 0, keepHit = 0;
+            await forEachFullLogits(hd, chunks, H, Y, infoCheck, (pp, l) => { if (argmaxBanned(l, new Set()) === tgt[pp]) hitC++; });
+            await forEachFullLogits(hd, chunks, H, Y, infoTrain, (pp, l) => { if (argmaxBanned(l, new Set()) === tgt[pp]) hitT++; });
+            await forEachFullLogits(hd, chunks, repH, repY, keepSel, (pp, l) => { if (argmaxBanned(l, new Set()) === repIdxAll[pp * sl.K]) keepHit++; });
+            const gen = infoCheck.length ? hitC / infoCheck.length : 1, mem = infoTrain.length ? hitT / infoTrain.length : 1;
+            const keep = keepSel.length ? keepHit / keepSel.length : 1;
+            report.rounds.push({ neurons: kTotal, selfCheck: gen, selfCheckTrain: mem, keep, ce: loss.ce, kl: loss.kl,
+              seconds: (performance.now() - t0) / 1000 });
+            onProgress(0.55 + 0.4 * (r + 1) / st.max_rounds,
+              `Самопроверка (${kTotal} нейронов): ${(gen * 100).toFixed(0)}% нового, старое не задето на ${(keep * 100).toFixed(0)}%`);
+            // своих отложенных вопросов мало, когда слово одно (3–4 вопроса): тогда решают и выученные свои ответы
+            if (gen >= st.target && mem >= (st.train_target === undefined ? 0 : st.train_target) && keep >= st.keep_target) break;
+            kNext = Math.round(kTotal * (st.grow_factor - 1));
+            if (kTotal + kNext > st.k_max) break;
+          }
+          report.neurons = kTotal;
+          report.newParams = kTotal * (2 * D + 1);
+          report.seconds = (performance.now() - t0) / 1000;
+          onProgress(1, "Готово");
+          const id = "m" + Date.now().toString(36) + Math.floor(rnd() * 1e6).toString(36);
+          return { id, words: facts.map(f => f.word), texts: facts.map(f => f.text), created: Date.now(), chunks, report };
+        } finally {
+          if (model.tail.extra) model.tail.extra.active = savedActive;
+        }
+      }
+
+      // Модуль -> обычный объект для IndexedDB (Float32Array сохраняются как есть) и обратно
+      const toStorable = mod => ({ ...mod, chunks: mod.chunks.map(c => ({ k: c.k, up: c.up, bias: c.bias, down: c.down })) });
+      const fromStorable = o => ({ ...o, chunks: o.chunks.map(c => ({ k: c.k, up: new Float32Array(c.up), bias: new Float32Array(c.bias), down: new Float32Array(c.down) })) });
+
+      return { factsFromText, textQuestions, mentions, nearMisses, learn, trainStep, posLoss, Adam, newChunk, captureReply,
+        cloneState, headOf, forEachFullLogits, toStorable, fromStorable, lrAt };
     })();
   </script>
   <script>
@@ -4024,6 +4778,27 @@
       }
     }
 
+    // Новый чат — одно действие на всё: лента очищается (вводная карточка остаётся), mini забывает разговор,
+    // обычная модель — недоспрошенный вопрос «не знаю — объясни». Выученные слова и веса не трогаются.
+    // Если mini сейчас пишет ответ или учится, сначала останавливаем её, а чистим, когда она остановится.
+    function startNewConversation() {
+      if (miniState.busy) {
+        miniState.cancelRequested = true;
+        miniState.clearAfterStop = true;
+        showToast("Останавливаю mini — потом начнём новый чат");
+        return;
+      }
+      miniState.clearAfterStop = false;
+      const container = document.getElementById("chatMessagesContainer");
+      while (container.children.length > 1) container.removeChild(container.lastChild);
+      miniResetContext();
+      miniState.lastUserText = "";
+      appState.pendingUnknownQuestion = null;
+      showToast(appState.modelMode === "mini" && miniState.bundle
+        ? "Новый чат: лента очищена, mini забыла, о чём вы говорили"
+        : "Новый чат: лента очищена");
+    }
+
     // Подпись над сообщением: «Вы» или «Singularity» с пометкой, какая модель ответила
     function makeRoleLabel(name, tag = "") {
       const role = document.createElement("div");
@@ -4165,7 +4940,7 @@
     //  Веса скачиваются один раз (GitHub или файл с телефона) и хранятся в IndexedDB браузера.
     //  Генерация идёт по токену с паузами для браузера — страница не зависает, ответ печатается.
     // =============================================================================================
-    const MINI_FILE_NAME = "slr_net_chat_ru_mini2.npz";
+    const MINI_FILE_NAME = "slr_net_chat_ru_mini3.npz";                // mini3 = веса mini2 + самообучение
     const MINI_WEIGHTS_URLS = [
       MINI_FILE_NAME,                                                   // рядом со страницей (сервер, GitHub Pages)
       "https://raw.githubusercontent.com/RamadanIU/Singularity/main/" + MINI_FILE_NAME
@@ -4181,13 +4956,17 @@
     // появляется кнопка «Обновить»: страница не скачивает 8.0 МБ сама, без спроса (мобильный интернет).
     // Прежние версии: mini2 до навыков «несколько вопросов» и «контекст» — шаг 2700, ошибка 1.1897; mini — без 4-битного
     // эмбеддинга. У всех них шаг и ошибка другие, поэтому им предлагается «Обновить» (TRAINING_MINI2_CONTEXT_RU.md).
-    const MINI_CHAT_VERSION = { step: 4960, bestVal: 1.1936, title: "mini2: несколько вопросов в одном сообщении и контекст" };
+    // mini3 — те же веса собеседника, что у mini2 (шаг 4960), плюс данные самообучения (selflearn, версия 1).
+    // У mini2 их нет — ей тоже предлагается «Обновить». mini2 остаётся в репозитории как прототип.
+    const MINI_CHAT_VERSION = { step: 4960, bestVal: 1.1936, selflearn: 1, title: "mini3: mini2 + самообучение" };
     function miniChatOutdated(bundle) {
       if (!bundle || !bundle.chat) return false;
       const m = bundle.meta || {};
+      if (!bundle.selflearn || bundle.selflearn.meta.version !== MINI_CHAT_VERSION.selflearn) return true;
       return m.step !== MINI_CHAT_VERSION.step || m.bestVal === null ||
         Math.abs(m.bestVal - MINI_CHAT_VERSION.bestVal) > 1e-3;
     }
+    const miniModelKey = bundle => `${bundle.meta.step}:${(bundle.meta.bestVal || 0).toFixed(4)}`;
     const miniState = {
       bundle: null,          // { model, tokenizer, cfg, meta }
       loading: false,
@@ -4200,7 +4979,10 @@
       temperature: 0.8,
       rng: Math.random,
       lastSpeed: 0,
-      source: ""
+      source: "",
+      modules: [],           // выученное самообучением: { id, words, texts, chunks, report, enabled }
+      learning: false,
+      lastUserText: ""
     };
 
     // --- хранение весов в браузере (IndexedDB), чтобы не скачивать их при каждом открытии
@@ -4233,6 +5015,91 @@
     const miniCacheGet = () => miniIdb("readonly", s => s.get("weights"));
     const miniCachePut = buf => miniIdb("readwrite", s => s.put(buf, "weights"));
     const miniCacheDelete = () => miniIdb("readwrite", s => s.delete("weights"));
+    // выученное (модули знаний) хранится отдельно от весов: удаление весов его не стирает
+    const miniModulesGet = () => miniIdb("readonly", s => s.get("modules"));
+    const miniModulesPut = obj => miniIdb("readwrite", s => s.put(obj, "modules"));
+
+    // Подключить модули к последнему слою модели (их нейроны включаются оркестратором — по словам в вопросе)
+    function miniAttachModules() {
+      const b = miniState.bundle;
+      if (!b || !b.model.tail) return;
+      b.model.tail.extra = miniState.modules.length ? { modules: miniState.modules, active: new Set() } : null;
+    }
+
+    async function miniLoadModules() {
+      miniState.modules = [];
+      const b = miniState.bundle;
+      if (b && b.selflearn) {
+        try {
+          const saved = await miniModulesGet();
+          if (saved && saved.model === miniModelKey(b) && Array.isArray(saved.list)) {
+            miniState.modules = saved.list.map(o => SLRSelf.fromStorable(o));
+          }
+        } catch (e) { /* IndexedDB недоступна — выученное живёт до перезагрузки страницы */ }
+      }
+      miniAttachModules();
+      updateMiniUI();
+    }
+
+    async function miniSaveModules() {
+      const b = miniState.bundle;
+      if (!b) return false;
+      try {
+        await miniModulesPut({ model: miniModelKey(b), list: miniState.modules.map(m => SLRSelf.toStorable(m)) });
+        return true;
+      } catch (e) {
+        return false;
+      }
+    }
+
+    // Какие модули включить для этого вопроса: выученное слово есть в нём — или это продолжение («А какого она
+    // цвета?»), а слово было в прошлом вопросе. На остальное модель отвечает без модулей, как раньше.
+    const MINI_FOLLOWUP_RE = /(?<![а-яё])(он|она|оно|они|его|её|ее|их|ему|ей|им|него|неё|нее|нём|нем|ней|них)(?![а-яё])/iu;
+    function miniRouteModules(userText) {
+      const b = miniState.bundle;
+      if (!b || !b.model.tail || !b.model.tail.extra) return [];
+      const followup = MINI_FOLLOWUP_RE.test(userText);
+      const on = miniState.modules.filter(m => m.enabled !== false &&
+        (SLRSelf.mentions(userText, m.words) || (followup && SLRSelf.mentions(miniState.lastUserText, m.words))));
+      b.model.tail.extra.active = new Set(on.map(m => m.id));
+      return on;
+    }
+
+    function miniRenderModules() {
+      const box = document.getElementById("miniModulesList");
+      if (!box) return;
+      box.textContent = "";
+      if (!miniState.modules.length) {
+        const span = document.createElement("span");
+        span.className = "subtle";
+        span.textContent = "Пока ничего. Объясните новое слово в поле выше или напишите «/запомни …» в чате.";
+        box.appendChild(span);
+        return;
+      }
+      for (const m of miniState.modules) {
+        const chip = document.createElement("span");
+        chip.className = "learned-chip";
+        const label = document.createElement("span");
+        const rep = m.report || {};
+        label.textContent = m.words.join(", ");
+        label.title = m.texts.join(" ") + (rep.neurons ? ` · ${rep.neurons} нейронов` : "");
+        const del = document.createElement("button");
+        del.type = "button";
+        del.innerHTML = '<svg class="icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M18 6 6 18" /><path d="m6 6 12 12" /></svg>';
+        del.title = "Забыть это";
+        del.setAttribute("aria-label", `Забыть: ${m.words.join(", ")}`);
+        del.addEventListener("click", async () => {
+          if (miniState.busy) return;
+          miniState.modules = miniState.modules.filter(x => x.id !== m.id);
+          miniAttachModules();
+          await miniSaveModules();
+          updateMiniUI();
+          showToast(`Забыто: ${m.words.join(", ")}`);
+        });
+        chip.append(label, del);
+        box.appendChild(chip);
+      }
+    }
 
     function miniSetProgress(fraction, text) {
       const box = document.getElementById("miniLoadProgress");
@@ -4254,7 +5121,8 @@
       if (!miniState.bundle) return "mini: обученная LLM · веса ещё не загружены";
       const p = (miniState.bundle.meta.params / 1e6).toFixed(1);
       const speed = miniState.lastSpeed ? ` · ${miniState.lastSpeed.toFixed(0)} ток/с` : "";
-      return `mini${miniState.bundle.chat ? "-собеседник" : ""}: ${p} млн параметров · веса {-1,0,+1}${speed}`;
+      const self = miniState.bundle.selflearn ? "3" : "";
+      return `mini${self}${miniState.bundle.chat ? "-собеседник" : ""}: ${p} млн параметров · веса {-1,0,+1}${speed}`;
     }
 
     function updateMiniUI() {
@@ -4271,17 +5139,27 @@
       if (status && loaded) {
         const m = miniState.bundle.meta;
         const speed = miniState.lastSpeed ? ` · ${miniState.lastSpeed.toFixed(0)} ток/с` : "";
+        const learned = miniState.modules.reduce((s, x) => s + (x.report && x.report.neurons ? x.report.neurons : 0), 0);
         status.textContent = miniState.bundle.chat
-          ? `mini-собеседник готов · ${(m.params / 1e6).toFixed(1)} млн параметров${speed}`
+          ? `${miniState.bundle.selflearn ? "mini3 готова" : "mini-собеседник готов"} · ${(m.params / 1e6).toFixed(1)} млн параметров${learned ? ` + ${learned} своих нейронов` : ""}${speed}`
           : `mini готова (продолжатель субтитров) · ${(m.params / 1e6).toFixed(1)} млн параметров${m.step ? " · " + m.step.toLocaleString("ru-RU") + " шагов обучения" : ""}${speed}`;
       }
       const chat = !loaded || !!miniState.bundle.chat;                // пока веса не загружены, ждём собеседника
       document.getElementById("miniChatPromptsBar").classList.toggle("hidden", !mini || !chat);
       document.getElementById("miniQuickPromptsBar").classList.toggle("hidden", !mini || chat);
       document.getElementById("miniLinesLabel").classList.toggle("hidden", chat);
-      document.getElementById("miniNewChatBtn").classList.toggle("hidden", !chat);
-      document.getElementById("miniUpgradeBox").classList.toggle("hidden", !loaded || chat);
-      document.getElementById("miniUpdateBox").classList.toggle("hidden", !loaded || !miniChatOutdated(miniState.bundle));
+      const upgrade = loaded && !chat, outdated = loaded && miniChatOutdated(miniState.bundle);
+      document.getElementById("miniUpgradeBox").classList.toggle("hidden", !upgrade);
+      document.getElementById("miniUpdateBox").classList.toggle("hidden", !outdated);
+      // Предупреждение не висит над чатом: в свёрнутой строке только маленькая метка, текст — внутри настроек
+      const alertBadge = document.getElementById("miniAlertBadge");
+      alertBadge.textContent = outdated ? "есть обновление" : upgrade ? "старая модель" : "";
+      alertBadge.classList.toggle("hidden", !outdated && !upgrade);
+      const canLearn = loaded && !!miniState.bundle.selflearn;
+      document.getElementById("miniLearnBox").classList.toggle("hidden", !canLearn);
+      const learnBtn = document.getElementById("miniLearnGoBtn");
+      if (learnBtn) learnBtn.disabled = miniState.busy;
+      if (canLearn) miniRenderModules();
       const input = document.getElementById("chatInputField");
       if (input) {
         input.placeholder = !mini ? "Напишите вопрос на русском..."
@@ -4290,6 +5168,18 @@
       if (mini) {
         const header = document.getElementById("headerStatsText");
         if (header) header.textContent = miniHeaderText();
+      }
+    }
+
+    // Настройки mini раскрываются по нажатию на строку состояния; выбор запоминается (по умолчанию свёрнуто)
+    function setMiniPanelOpen(open, { save = true } = {}) {
+      const box = document.getElementById("miniReadyBox");
+      const btn = document.getElementById("miniPanelToggle");
+      box.classList.toggle("open", open);
+      btn.setAttribute("aria-expanded", String(open));
+      btn.title = open ? "Свернуть настройки mini" : "Настройки mini: обучение, фантазия, веса";
+      if (save) {
+        try { localStorage.setItem("singularity_mini_panel_open", open ? "1" : "0"); } catch (e) { /* песочница */ }
       }
     }
 
@@ -4312,6 +5202,7 @@
       miniState.bundle = bundle;
       miniState.source = sourceLabel;
       miniResetContext();
+      await miniLoadModules();
       let cached = false;
       if (cache) {
         try {
@@ -4332,7 +5223,7 @@
     async function miniFetchWithProgress(url, onProgress) {
       const resp = await fetch(url);
       if (!resp.ok) throw new Error(`HTTP ${resp.status}`);
-      const total = Number(resp.headers.get("content-length")) || 8.5e6;
+      const total = Number(resp.headers.get("content-length")) || 10.9e6;
       if (!resp.body || typeof resp.body.getReader !== "function") return await resp.arrayBuffer();
       const reader = resp.body.getReader();
       const chunks = [];
@@ -4480,6 +5371,8 @@
     // поэтому модель помнит разговор (например, имя, которое вы назвали).
     async function miniGenerateChatReply(userText, onUpdate) {
       const { model, tokenizer: tok, chat } = miniState.bundle;
+      const knowledge = miniRouteModules(userText);                    // модули знаний — только когда о них спрашивают
+      miniState.lastUserText = userText;
       const userIds = [chat.userId, ...tok.encode(userText.replace(/\s*\n\s*/g, " ")), tok.nlId, chat.botId];
       if (miniState.ctxIds.length + userIds.length + MINI_LIMITS.chatMaxNewTokens > MINI_LIMITS.context) {
         const tail = miniTrimTail(miniState.ctxIds, MINI_LIMITS.chatKeepOnTrim, tok.nlId, chat.userId);
@@ -4515,7 +5408,8 @@
       if (!out.length || out[out.length - 1] !== tok.nlId) await miniFeed([tok.nlId]);   // закрываем реплику
       const ms = performance.now() - t0;
       const processed = miniState.ctxIds.length - ctxBefore;
-      return { ids: out, depths, ms, tokPerSec: processed / Math.max(ms / 1000, 1e-3), stopped: miniState.cancelRequested };
+      return { ids: out, depths, ms, tokPerSec: processed / Math.max(ms / 1000, 1e-3), stopped: miniState.cancelRequested,
+        knowledge: knowledge.map(m => m.words.join(", ")) };
     }
 
     async function miniGenerateReply(userText, onUpdate) {
@@ -4640,6 +5534,12 @@
           const c = document.createElement("span");
           c.textContent = `${(res.ms / 1000).toFixed(1)} с · ${res.tokPerSec.toFixed(0)} ток/с`;
           meta.append(a, b, c);
+          if (res.knowledge && res.knowledge.length) {
+            const k = document.createElement("span");
+            k.className = "meta-accent";
+            k.textContent = `выученное: ${res.knowledge.join("; ")}`;
+            meta.appendChild(k);
+          }
           card.appendChild(meta);
           container.scrollTop = container.scrollHeight;
         },
@@ -4660,6 +5560,12 @@
         showToast("mini ещё пишет ответ…");
         return;
       }
+      const learnCmd = /^\s*(?:\/запомни|\/научи|запомни\s*[:,—–-])\s*([\s\S]+)$/iu.exec(clean);
+      if (learnCmd) {
+        appendChatMessage("user", clean);
+        await miniLearn(learnCmd[1]);
+        return;
+      }
       appendChatMessage("user", clean);
       const view = miniCreateReplyBubble();
       miniState.busy = true;
@@ -4676,6 +5582,96 @@
         miniState.cancelRequested = false;
         miniUpdateSendButton();
         updateMiniUI();
+        if (miniState.clearAfterStop) startNewConversation();
+      }
+    }
+
+    // Карточка самообучения в ленте: прогресс, итог или ошибка
+    function miniCreateLearnBubble() {
+      const container = document.getElementById("chatMessagesContainer");
+      const wrapper = document.createElement("div");
+      wrapper.className = "msg assistant";
+      wrapper.setAttribute("data-mini-learn", "1");
+      const card = wrapper;
+      const title = makeRoleLabel("Singularity", "самообучение");
+      const track = document.createElement("div");
+      track.className = "progress-track learn-track";
+      const fill = document.createElement("div");
+      fill.className = "progress-fill";
+      track.appendChild(fill);
+      const text = document.createElement("div");
+      text.className = "mini-load-text learn-progress-text";
+      text.textContent = "Готовлю вопросы…";
+      card.append(title, track, text);
+      container.appendChild(wrapper);
+      container.scrollTop = container.scrollHeight;
+      return {
+        progress(f, t) {
+          fill.style.width = `${Math.round(Math.max(0, Math.min(1, f)) * 100)}%`;
+          text.textContent = t;
+        },
+        done(mod, saved) {
+          const r = mod.report, last = r.rounds[r.rounds.length - 1] || {};
+          track.remove();
+          text.remove();
+          const body = document.createElement("div");
+          body.className = "bubble learn-result";
+          const n10 = r.neurons % 10, n100 = r.neurons % 100;
+          const word = n10 === 1 && n100 !== 11 ? "новый нейрон" : n10 >= 2 && n10 <= 4 && (n100 < 12 || n100 > 14) ? "новых нейрона" : "новых нейронов";
+          body.textContent = `Запомнил: ${mod.words.join(", ")}. Отрастил себе ${r.neurons} ${word} ` +
+            `(${(r.newParams / 1000).toFixed(1)} тыс. чисел; старые веса не менялись) за ${Math.round(r.seconds)} с. ` +
+            `Самопроверка: ${Math.round((last.selfCheck || 0) * 100)}% нового на своих отложенных вопросах, ` +
+            `старое не задето на ${Math.round((last.keep || 0) * 100)}%. Спросите меня — даже в новом чате.` +
+            (saved ? "" : " (Сохранить в браузере не удалось: выученное пропадёт при перезагрузке страницы.)");
+          card.appendChild(body);
+          container.scrollTop = container.scrollHeight;
+        },
+        fail(e) {
+          track.remove();
+          text.className = "bubble learn-error";
+          text.textContent = `Не выучил: ${e && e.message ? e.message : e}`;
+        }
+      };
+    }
+
+    async function miniLearn(text) {
+      const b = miniState.bundle;
+      if (!b || !b.selflearn) {
+        showToast("Учиться умеет mini3 — скачайте её кнопкой «Обновить» в панели mini");
+        return null;
+      }
+      if (miniState.busy) {
+        showToast("mini занята — дождитесь конца");
+        return null;
+      }
+      const view = miniCreateLearnBubble();
+      miniState.busy = true;
+      miniState.learning = true;
+      miniState.cancelRequested = false;
+      miniUpdateSendButton();
+      updateMiniUI();
+      try {
+        const mod = await SLRSelf.learn(b, text, {
+          onProgress: (f, t) => view.progress(f, t),
+          isCancelled: () => miniState.cancelRequested,
+          seed: (Date.now() % 1000000007) >>> 0
+        });
+        mod.enabled = true;
+        miniState.modules.push(mod);
+        miniAttachModules();
+        const saved = await miniSaveModules();
+        view.done(mod, saved);
+        return mod;
+      } catch (e) {
+        view.fail(e);
+        return null;
+      } finally {
+        miniState.busy = false;
+        miniState.learning = false;
+        miniState.cancelRequested = false;
+        miniUpdateSendButton();
+        updateMiniUI();
+        if (miniState.clearAfterStop) startNewConversation();
       }
     }
 
@@ -4702,13 +5698,25 @@
           if (btn) handleUserPrompt(btn.getAttribute("data-prompt"));
         });
       }
-      document.getElementById("miniUpgradeBtn").addEventListener("click", () => miniDownload());
-      document.getElementById("miniUpdateBtn").addEventListener("click", () => miniDownload());
-      document.getElementById("miniNewChatBtn").addEventListener("click", () => {
-        if (miniState.busy) return;
-        miniResetContext();
-        showToast("Начинаем разговор заново: mini забыла, что вы говорили");
+      // «Обновить» / «Выучить» сворачивают настройки, чтобы были видны прогресс и чат
+      document.getElementById("miniUpgradeBtn").addEventListener("click", () => { setMiniPanelOpen(false, { save: false }); miniDownload(); });
+      document.getElementById("miniLearnGoBtn").addEventListener("click", async () => {
+        const inp = document.getElementById("miniLearnInput");
+        const text = inp.value.trim();
+        if (!text) { showToast("Напишите, что выучить: «Слово — это …»"); return; }
+        if (appState.modelMode !== "mini" || miniState.busy) return;
+        setMiniPanelOpen(false, { save: false });
+        appendChatMessage("user", "/запомни " + text);
+        const mod = await miniLearn(text);
+        if (mod) inp.value = "";
       });
+      document.getElementById("miniUpdateBtn").addEventListener("click", () => { setMiniPanelOpen(false, { save: false }); miniDownload(); });
+      document.getElementById("miniPanelToggle").addEventListener("click", () => {
+        setMiniPanelOpen(!document.getElementById("miniReadyBox").classList.contains("open"));
+      });
+      let panelOpen = false;
+      try { panelOpen = localStorage.getItem("singularity_mini_panel_open") === "1"; } catch (e) { /* песочница */ }
+      setMiniPanelOpen(panelOpen, { save: false });
       document.getElementById("miniForgetBtn").addEventListener("click", async () => {
         try { await miniCacheDelete(); } catch (e) { /* ничего */ }
         miniState.bundle = null;
@@ -4910,15 +5918,8 @@
         handleUserPrompt(btn.getAttribute("data-prompt"));
       });
 
-      // Кнопка очистки чата
-      document.getElementById("clearChatBtn").addEventListener("click", () => {
-        const container = document.getElementById("chatMessagesContainer");
-        while (container.children.length > 1) {
-          container.removeChild(container.lastChild);
-        }
-        miniResetContext();                   // mini тоже начинает новый диалог
-        showToast("История диалога очищена");
-      });
+      // «Новый чат»: одна кнопка очищает и ленту, и память модели о разговоре
+      document.getElementById("clearChatBtn").addEventListener("click", () => startNewConversation());
 
       // Переключатель режима "Рентген слов"
       const xrayBtn = document.getElementById("xrayToggleBtn");
