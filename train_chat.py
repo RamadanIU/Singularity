@@ -38,7 +38,7 @@
   python train_chat.py align  --ckpt runs/chat_sft/best.pt --data data/chat --out runs/chat_align
   python train_chat.py eval   --ckpt slr_net_subtitles_ru_mini.npz runs/chat_align/best.pt --data data/chat
   python train_chat.py export --ckpt runs/chat_align/best.pt --out slr_net_chat_ru_mini.npz
-  python train_chat.py chat   --ckpt slr_net_chat_ru_mini2.npz
+  python train_chat.py chat   --ckpt slr_net_chat_ru_mini3.npz
 
 Формат диалога (токены):  <user> текст <n> <bot> ответ <n> <user> ... <bot> ответ <n>
 Ролевые токены лежат ВНЕ словаря SentencePiece (id = 8192 и 8193): их нельзя «набрать» текстом,
@@ -1577,7 +1577,7 @@ def main(argv: Optional[List[str]] = None) -> None:
     lv.add_argument("--device", default="cpu", help="cpu, cuda или auto")
 
     c = sub.add_parser("chat", help="диалог в консоли")
-    c.add_argument("--ckpt", default="slr_net_chat_ru_mini2.npz")
+    c.add_argument("--ckpt", default="slr_net_chat_ru_mini3.npz")   # mini3 = веса mini2 + данные самообучения
     c.add_argument("--prompt", default=None, help="один вопрос без интерактивного режима")
     c.add_argument("--max-new-tokens", type=int, default=64)
     c.add_argument("--temperature", type=float, default=0.7)
