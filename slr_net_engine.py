@@ -352,9 +352,10 @@ if TORCH_AVAILABLE:
         def effective_weight(self) -> torch.Tensor:
             if not self.ternary:
                 return self.weight
-            if torch.is_grad_enabled():
+            if torch.is_grad_enabled() and self.weight.requires_grad:
                 return self._quantize_weight()
-            # Инференс: кэшируем квантованные веса, чтобы не квантовать их на каждом токене
+            # Инференс или замороженный слой (учатся только новые нейроны модуля знаний, self_grow.py):
+            # градиент через STE не нужен, квантованные веса берутся из кэша (а не квантуются на каждом проходе)
             key = (self.weight.data_ptr(), self.weight._version, self.weight.dtype)
             if self._wq_cache is None or self._wq_cache[0] != key:
                 self._wq_cache = (key, self._quantize_weight().detach())
@@ -1109,7 +1110,7 @@ if TORCH_AVAILABLE:
             bits = self.config.embed_bits
             if not bits:
                 return w
-            if torch.is_grad_enabled():
+            if torch.is_grad_enabled() and w.requires_grad:
                 return fake_quant_groups(w, bits, self.config.embed_group)
             # Инференс: округляем один раз, а не на каждом токене генерации
             key = (w.data_ptr(), w._version, w.dtype)
