@@ -276,7 +276,8 @@ def test_cancel_button_stops_long_training(fresh_page):
 # ------------------------------------------------------------------ режим mini: обученная LLM в браузере
 ROOT = os.path.dirname(HTML)
 MINI_NPZ = os.path.join(ROOT, "slr_net_subtitles_ru_mini.npz")
-CHAT_NPZ = os.path.join(ROOT, "slr_net_chat_ru_mini2.npz")          # собеседник по умолчанию (mini2)
+CHAT_NPZ = os.path.join(ROOT, "slr_net_chat_ru_mini3.npz")          # собеседник по умолчанию (mini3 = mini2 + самообучение)
+PREV_CHAT_NPZ = os.path.join(ROOT, "slr_net_chat_ru_mini2.npz")     # прототип mini2 (без самообучения)
 OLD_CHAT_NPZ = os.path.join(ROOT, "slr_net_chat_ru_mini.npz")       # прежний собеседник (mini)
 MINI_DIALOGUE = ("- Привет! Как дела?\n- Хорошо, спасибо. А у тебя?\n- Тоже неплохо. Куда ты идёшь?\n"
                  "- Домой, уже поздно.\nДоктор, что с ним?\n- С ним всё будет хорошо.\n")
@@ -409,7 +410,7 @@ def test_mini_weights_are_cached_and_mode_is_remembered(browser):
 def test_mini_download_button_fetches_weights_from_server(browser):
     """Страница, открытая с сервера (например, GitHub Pages), скачивает веса собеседника, лежащие рядом с ней."""
     if not os.path.exists(CHAT_NPZ):
-        pytest.skip("нет файла весов slr_net_chat_ru_mini2.npz")
+        pytest.skip("нет файла весов slr_net_chat_ru_mini3.npz")
     import functools
     import http.server
     import threading
@@ -447,7 +448,7 @@ def test_mini_download_button_fetches_weights_from_server(browser):
 @pytest.fixture(scope="module")
 def chat_page(browser):
     if not os.path.exists(CHAT_NPZ):
-        pytest.skip("нет файла весов slr_net_chat_ru_mini2.npz")
+        pytest.skip("нет файла весов slr_net_chat_ru_mini3.npz")
     pg = _open_page(browser)
     pg.click("#modeMiniBtn")
     pg.set_input_files("#miniFileInput", CHAT_NPZ)
@@ -517,11 +518,13 @@ CONTEXT_PROMPTS = [                     # навыки «несколько во
 
 def test_previous_mini2_weights_offer_update(chat_page):
     """У кого в браузере сохранена прежняя mini2 (до навыков «несколько вопросов» и «контекст»: шаг 2 700,
-    ошибка 1.1897), тому страница предлагает «⬇ Обновить»; нынешние веса — актуальны."""
-    assert chat_page.evaluate("() => miniChatOutdated({chat: true, meta: {step: 2700, bestVal: 1.1897}})") is True
+    ошибка 1.1897) или нынешняя mini2 без самообучения, тому страница предлагает «⬇ Обновить»; mini3 — актуальна."""
+    sl = "{meta: {version: 1}}"
+    assert chat_page.evaluate(f"() => miniChatOutdated({{chat: true, selflearn: {sl}, meta: {{step: 2700, bestVal: 1.1897}}}})") is True
     with np.load(CHAT_NPZ) as z:
         step, best = int(z["meta.step"][0]), float(z["meta.best_val"][0])
-    assert chat_page.evaluate(f"() => miniChatOutdated({{chat: true, meta: {{step: {step}, bestVal: {best}}}}})") is False
+    assert chat_page.evaluate(f"() => miniChatOutdated({{chat: true, selflearn: {sl}, meta: {{step: {step}, bestVal: {best}}}}})") is False
+    assert chat_page.evaluate(f"() => miniChatOutdated({{chat: true, meta: {{step: {step}, bestVal: {best}}}}})") is True
 
 
 def test_context_skills_in_browser_match_pytorch(chat_page):
@@ -680,6 +683,228 @@ def test_model_without_memory_and_compressed_embedding_matches_pytorch(browser, 
         assert (got.argmax(1) == ref.argmax(1)).mean() > 0.95
         assert np.abs(got - ref).max() < 0.05 * np.abs(ref).max() and np.abs(got - ref).mean() < 0.01
         assert sum(js["depths"]) > 0
+        assert pg.errors == []
+    finally:
+        pg.close()
+
+
+# ------------------------------------------------------------------ самообучение mini3 (selflearn_tail.py)
+
+def _b64_f32(pg, expr):
+    import base64
+    return np.frombuffer(base64.b64decode(pg.evaluate(f"""() => {{
+        const a = {expr}; let bin = ""; const u8 = new Uint8Array(a.buffer, a.byteOffset, a.byteLength);
+        for (let i = 0; i < u8.length; i += 0x8000) bin += String.fromCharCode.apply(null, u8.subarray(i, i + 0x8000));
+        return btoa(bin); }}""")), dtype=np.float32)
+
+
+def test_mini3_file_is_mini2_weights_plus_selflearn_data():
+    """mini3 — те же веса, что у mini2 (собеседник не менялся), плюс данные самообучения и их описание."""
+    if not (os.path.exists(CHAT_NPZ) and os.path.exists(PREV_CHAT_NPZ)):
+        pytest.skip("нет файлов mini2/mini3")
+    import json
+    sys.path.insert(0, ROOT)
+    import selflearn_tail as SL
+    with np.load(CHAT_NPZ) as z3, np.load(PREV_CHAT_NPZ) as z2:
+        assert set(z2.files) <= set(z3.files)
+        for k in z2.files:
+            assert np.array_equal(z2[k], z3[k]), k
+        extra = sorted(set(z3.files) - set(z2.files))
+        assert extra == sorted(["meta.selflearn", "selflearn.replay_h", "selflearn.replay_h_scale", "selflearn.replay_y",
+                                "selflearn.replay_y_scale", "selflearn.replay_top_idx", "selflearn.replay_top_lp",
+                                "selflearn.replay_neg"])
+        meta = json.loads(str(z3["meta.selflearn"]))
+        n, d = z3["selflearn.replay_h"].shape
+        assert meta["version"] == 1 and meta["site"] == "decoder.3" and meta["settings"] == SL.SETTINGS
+        assert d == 512 and z3["selflearn.replay_top_idx"].shape == (n, 32) and 0 < z3["selflearn.replay_neg"].sum() < n
+
+
+def test_prototype_mini2_still_works_and_offers_mini3(browser):
+    """mini2 осталась прототипом: работает, но учиться не умеет, и страница предлагает обновиться до mini3."""
+    if not os.path.exists(PREV_CHAT_NPZ):
+        pytest.skip("нет файла весов slr_net_chat_ru_mini2.npz")
+    pg = _open_page(browser)
+    try:
+        pg.click("#modeMiniBtn")
+        pg.set_input_files("#miniFileInput", PREV_CHAT_NPZ)
+        pg.wait_for_function("() => miniState.bundle !== null && !miniState.loading", timeout=60000)
+        assert pg.evaluate("() => miniState.bundle.selflearn") is None
+        assert pg.evaluate("() => miniChatOutdated(miniState.bundle)") is True
+        assert pg.evaluate("() => !document.getElementById('miniUpdateBox').classList.contains('hidden')")
+        assert pg.evaluate("() => document.getElementById('miniLearnBox').classList.contains('hidden')")
+        assert pg.evaluate("async () => await miniLearn('Курдяпа — это птица.')") is None
+        assert pg.errors == []
+    finally:
+        pg.close()
+
+
+SELF_TEXTS = [
+    "Курдяпа — это маленькая птица синего цвета. Она живёт в лесу.",
+    "Бармук — это большой инструмент серого цвета. Он лежит в гараже.  Глимпа — это напиток.\nЕго пьют летом.",
+    "Слово без определения. Зурмоп - это огромный овощ красного цвета, растёт на грядке.",
+    "Ничего определённого тут нет.",
+]
+
+
+def test_selflearn_question_tool_matches_python(chat_page):
+    """Новые слова, вопросы о них и выбор модуля «по словам» в браузере — те же, что в self_grow.py/orchestrator.py."""
+    sys.path.insert(0, ROOT)
+    pytest.importorskip("torch")
+    import orchestrator as O
+    import self_grow as S
+    for text in SELF_TEXTS:
+        js = chat_page.evaluate("(t) => SLRSelf.factsFromText(t).map(f => [f.word, f.text, SLRSelf.textQuestions(f.word, f.text)])", text)
+        py = [[f.word, f.text, [list(q) for q in S.text_questions(f.word, f.text)]] for f in S.facts_from_text(" ".join(text.split()))]
+        assert js == py, text
+    cases = [("Напомни, что такое курдяпа?", ["курдяпа"]), ("Какого цвета курдяпы?", ["курдяпа"]),
+             ("Что такое кошка?", ["курдяпа"]), ("А бармук где лежит?", ["курдяпа", "бармук"]), ("Скурдяпа", ["курдяпа"])]
+    for text, words in cases:
+        assert chat_page.evaluate("([t, w]) => SLRSelf.mentions(t, w)", [text, words]) == O.lexical_route(text, words), text
+    vs = chat_page.evaluate("() => SLRSelf.nearMisses('курдяпа', 6, SLRMini.mulberry32(3))")
+    assert len(set(vs)) == 6 and all(v != "курдяпа" and v[-2:] == "па" and len(v) == 7 for v in vs)
+
+
+def test_selflearn_features_and_neurons_match_pytorch(chat_page):
+    """Признаки последнего слоя, которые страница собирает для обучения, и ответ модели с новыми нейронами — те же,
+    что в PyTorch (selflearn_tail.capture_tail и GrownMLP последнего слоя)."""
+    torch = pytest.importorskip("torch")
+    pytest.importorskip("sentencepiece")
+    sys.path.insert(0, ROOT)
+    import self_grow as S
+    import selflearn_tail as SL
+    import train_chat
+    model, tok, _ = train_chat.load_chat_model(CHAT_NPZ, torch.device("cpu"))
+    q, a = "Что такое курдяпа?", "Курдяпа — это маленькая птица синего цвета."
+    q_ids, a_ids = tok.encode_line(q), tok.encode_line(a)
+    H, Y, tg, _ = SL.capture_tail(model, tok, [train_chat.encode_dialogue(tok, [("user", q), ("bot", a)])])
+    js = chat_page.evaluate("async ([q, a]) => { const c = await SLRSelf.captureReply(miniState.bundle, q, a); window.__cap = c; return c.targets; }",
+                            [q_ids, a_ids])
+    assert js == tg.tolist()
+    h = _b64_f32(chat_page, "window.__cap.H").reshape(H.shape)
+    y = _b64_f32(chat_page, "window.__cap.Y").reshape(Y.shape)
+    assert np.abs(h - H.numpy()).max() < 0.05 * np.abs(H.numpy()).max()
+    assert np.abs(y - Y.numpy()).max() < 0.05 * np.abs(Y.numpy()).max()
+    # случайный «выученный» кусок нейронов — в PyTorch и в браузере
+    g = torch.Generator().manual_seed(0)
+    k, D = 6, model.config.d_model
+    up, bias, down = torch.randn(k, D, generator=g) * 0.3, torch.randn(k, generator=g) * 0.1, torch.randn(D, k, generator=g) * 0.05
+    block = SL.tail_block(model)
+    block.mlp = S.GrownMLP(block.mlp)
+    ch = block.mlp.grow(k, 0.0, seed=0)
+    with torch.no_grad():
+        ch.up.copy_(up); ch.bias.copy_(bias); ch.down.copy_(down)
+    ctx = train_chat.prompt_ids(tok, [("user", q)])
+    with torch.no_grad():
+        cache = model.init_cache(1)
+        ref = torch.stack([model.step(torch.tensor([t]), cache)[0] for t in ctx]).float().numpy()
+    got = chat_page.evaluate("""([ctx, up, bias, down, k]) => {
+        const m = miniState.bundle.model;
+        m.tail.extra = { modules: [{ id: "t", chunks: [{ k, up: Float32Array.from(up), bias: Float32Array.from(bias), down: Float32Array.from(down) }] }], active: null };
+        const st = m.newState(), lg = new Float32Array(m.V), out = [];
+        try { for (const t of ctx) { m.step(t, st, lg); out.push(Array.from(lg)); } }
+        finally { miniAttachModules(); }
+        return out;
+    }""", [ctx, up.flatten().tolist(), bias.tolist(), down.flatten().tolist(), k])
+    got = np.array(got, dtype=np.float32)
+    assert (got.argmax(1) == ref.argmax(1)).all()
+    # кусок нарочно сильный (сдвигает логиты на единицы) — допуск чуть шире, чем у модели без него
+    assert np.abs(got - ref).max() < 0.25 and np.abs(got - ref).mean() < 0.03
+
+
+def test_selflearn_train_step_matches_python(chat_page):
+    """Шаг обучения новых нейронов в браузере (ручной обратный проход, ошибка по выборке словаря, Adam) даёт те же
+    веса, что эталон на PyTorch с автоматическими производными (selflearn_tail.train_step)."""
+    torch = pytest.importorskip("torch")
+    pytest.importorskip("sentencepiece")
+    sys.path.insert(0, ROOT)
+    import selflearn_tail as SL
+    import train_chat
+    model, tok, _ = train_chat.load_chat_model(CHAT_NPZ, torch.device("cpu"))
+    Ew, fw, eps = SL.head_weights(model)
+    V, D = Ew.shape
+    g = torch.Generator().manual_seed(1)
+    ns, nr, kc, kr = 5, 4, 6, 5
+    Hs, Ys = torch.randn(ns, D, generator=g), torch.randn(ns, D, generator=g) * 3
+    Hr, Yr = torch.randn(nr, D, generator=g), torch.randn(nr, D, generator=g) * 3
+    cand = torch.randint(0, V, (ns, kc), generator=g)
+    cand[0, 3] = cand[0, 0]                                      # нужное слово ещё и в топе — не считать дважды
+    ridx = torch.stack([torch.randperm(V, generator=g)[:kr] for _ in range(nr)])
+    rlp = torch.log_softmax(torch.randn(nr, kr, generator=g), -1)
+    rand = torch.randint(0, V, (7,), generator=g)
+    rand[0] = cand[1, 2]                                         # случайное слово совпало с выбранным
+    k = 3
+    chunk = {"up": torch.randn(k, D, generator=g) * 0.05, "bias": torch.full((k,), 0.2),
+             "down": torch.randn(D, k, generator=g) * 0.01}
+    init = {n: v.clone() for n, v in chunk.items()}
+    ce_ref = float(SL.batch_loss([chunk], Ew, fw, eps, Hs, Ys, cand, rand, V, "ce"))
+    kl_ref = float(SL.batch_loss([chunk], Ew, fw, eps, Hr, Yr, ridx, rand, V, "kl", rlp))
+    opt = SL.Adam([chunk["up"], chunk["bias"], chunk["down"]])
+    SL.train_step([chunk], [chunk], Ew, fw, eps, V, (Hs, Ys, cand), (Hr, Yr, ridx, rlp), opt, 0.01, 0.7, rand)
+    js = chat_page.evaluate("""(a) => {
+        const F = x => Float32Array.from(x), I = x => Int32Array.from(x);
+        const hd = SLRSelf.headOf(miniState.bundle);
+        const ch = { k: a.k, up: F(a.up), bias: F(a.bias), down: F(a.down) };
+        const stud = { H: F(a.Hs), Y: F(a.Ys), cand: I(a.cand), Kc: a.kc };
+        const rep = { H: F(a.Hr), Y: F(a.Yr), idx: I(a.ridx), lp: F(a.rlp), K: a.kr };
+        const adam = new SLRSelf.Adam([ch.up, ch.bias, ch.down]);
+        const loss = SLRSelf.trainStep(hd, [ch], stud, [...Array(a.ns).keys()], rep, [...Array(a.nr).keys()], I(a.rand), adam, 0.01, 0.7);
+        return { loss, up: Array.from(ch.up), bias: Array.from(ch.bias), down: Array.from(ch.down) };
+    }""", {"k": k, "up": init["up"].flatten().tolist(), "bias": init["bias"].tolist(), "down": init["down"].flatten().tolist(),
+           "Hs": Hs.flatten().tolist(), "Ys": Ys.flatten().tolist(), "cand": cand.flatten().tolist(), "kc": kc,
+           "Hr": Hr.flatten().tolist(), "Yr": Yr.flatten().tolist(), "ridx": ridx.flatten().tolist(),
+           "rlp": rlp.flatten().tolist(), "kr": kr, "rand": rand.tolist(), "ns": ns, "nr": nr})
+    assert js["loss"]["ce"] == pytest.approx(ce_ref, rel=1e-4, abs=1e-5)
+    assert js["loss"]["kl"] == pytest.approx(kl_ref, rel=1e-3, abs=1e-5)
+    for name in ("up", "bias", "down"):
+        got = np.array(js[name], dtype=np.float32).reshape(chunk[name].shape)
+        moved = (chunk[name] - init[name]).abs().max().item()
+        assert moved > 0
+        assert np.abs(got - chunk[name].numpy()).max() < 1e-3 * max(moved, 1e-3) + 1e-6, name
+
+
+def test_selflearn_end_to_end_in_browser(browser):
+    """Полный цикл в браузере: «/запомни …» в чате -> модель сама учится (растут новые нейроны) -> в новом
+    разговоре отвечает о выученном слове, про невыученное говорит «не знаю»; выученное переживает перезагрузку
+    страницы (IndexedDB) и удаляется кнопкой ✕."""
+    if not os.path.exists(CHAT_NPZ):
+        pytest.skip("нет файла весов slr_net_chat_ru_mini3.npz")
+    pg = _open_page(browser)
+    try:
+        pg.click("#modeMiniBtn")
+        pg.set_input_files("#miniFileInput", CHAT_NPZ)
+        pg.wait_for_function("() => miniState.bundle !== null && !miniState.loading", timeout=60000)
+        assert pg.evaluate("() => !document.getElementById('miniLearnBox').classList.contains('hidden')")
+        _start_heartbeat(pg)
+        pg.fill("#chatInputField", "/запомни Курдяпа — это маленькая птица синего цвета. Она живёт в лесу.")
+        pg.click("#sendMsgBtn")
+        pg.wait_for_function("() => !miniState.busy && document.querySelector('[data-mini-learn] .learn-result')", timeout=600000)
+        assert pg.evaluate("() => window.__maxGap") < 1500, "главный поток был занят слишком долго"
+        result = pg.evaluate("() => document.querySelector('[data-mini-learn] .learn-result').textContent")
+        assert "Запомнил: курдяпа" in result, result
+        mods = pg.evaluate("() => miniState.modules.map(m => [m.words, m.report.neurons, m.report.rounds.length])")
+        assert len(mods) == 1 and mods[0][0] == ["курдяпа"] and mods[0][1] >= 4
+
+        def ask(q):
+            return pg.evaluate("""async (q) => {
+                miniResetContext(); miniState.temperature = 0; miniState.lastUserText = "";
+                const r = await miniGenerateChatReply(q, () => {});
+                return [miniState.bundle.tokenizer.decode(r.ids).trim(), r.knowledge];
+            }""", q)
+
+        a, kn = ask("Что такое курдяпа?")
+        assert "птиц" in a.lower() and kn == ["курдяпа"], a
+        a, kn = ask("Что такое клыдел?")
+        assert kn == [] and ("незнаком" in a or "не знаю" in a.lower()), a
+        assert "курдяпа" in pg.evaluate("() => document.getElementById('miniModulesList').textContent")
+        pg.reload()                                                           # выученное сохранено в браузере
+        pg.wait_for_function("() => miniState.bundle !== null && !miniState.loading && miniState.modules.length === 1",
+                             timeout=120000)
+        a, kn = ask("Напомни, что такое курдяпа.")
+        assert "птиц" in a.lower() and kn == ["курдяпа"], a
+        pg.click("#miniModulesList .learned-chip button")                     # забыть
+        pg.wait_for_function("() => miniState.modules.length === 0", timeout=10000)
+        a, kn = ask("Что такое курдяпа?")
+        assert kn == [] and "птиц" not in a.lower(), a
         assert pg.errors == []
     finally:
         pg.close()

@@ -6,6 +6,7 @@
 """
 
 import os
+import random
 import sys
 
 import numpy as np
@@ -331,3 +332,65 @@ def test_module_router_kinds_on_tiny_model(one_thread):
         if kind in ("lexical", "hybrid"):
             mr.threshold = 0.5 if kind == "lexical" else 2.0
             assert mr.route(qs) == [["m"], [], []]
+
+
+# ------------------------------------------------------------------ облегчённое самообучение (как в браузере)
+
+def test_sampled_logz_is_exact_when_sample_covers_the_rest():
+    """Оценка log Σ exp по выборке совпадает с точной, если случайные слова — ровно все невыбранные."""
+    import selflearn_tail as SL
+    g = torch.Generator().manual_seed(0)
+    V = 50
+    logits = torch.randn(3, V, generator=g) * 3
+    cand = torch.tensor([[4, 7, 4, 9], [0, 1, 2, 3], [10, 11, 12, 10]])
+    for r in range(3):
+        rest = torch.tensor([v for v in range(V) if v not in set(cand[r].tolist())])
+        idx = torch.cat([cand[r], rest])
+        lc = logits[r, idx][None]
+        got = SL.sampled_logz(lc, cand[r:r + 1], rest, V)
+        assert torch.allclose(got, torch.logsumexp(logits[r], 0)[None], atol=1e-5)
+
+
+def test_feature_quantization_roundtrip():
+    import selflearn_tail as SL
+    X = torch.randn(20, 64) * torch.rand(20, 1) * 5
+    q, s = SL.quantize_rows(X)
+    assert q.dtype == np.int8 and s.dtype == np.float16
+    Xr = SL.dequantize_rows(q, s)
+    assert (Xr - X).abs().max(1).values.le(X.abs().max(1).values / 127 + 1e-3).all()
+
+
+def test_self_learn_tail_on_tiny_model(one_thread):
+    """Облегчённое самообучение целиком на крошечной модели: данные «не менять старое», рост нейронов только в
+    последнем слое, учатся только новые нейроны, выученное ложится в GrownMLP последнего слоя."""
+    pytest.importorskip("sentencepiece")
+    import selflearn_tail as SL
+    tok = _chat_tokenizer()
+    torch.manual_seed(0)
+    model = E.SLRNetLanguageModel(E.make_config("tiny", vocab_size=tok.vocab_size, memory_keys=0)).eval()
+    old = {k: v.clone() for k, v in model.state_dict().items()}
+    pack = SL.build_pack(model, tok, None, n_old=10, n_neg=40, log=lambda *a, **k: None)
+    assert pack["selflearn.replay_h"].dtype == np.int8 and pack["selflearn.replay_neg"].all()
+    facts = S.facts_from_text("Курдяпа — это маленькая птица синего цвета. Она живёт в лесу.")
+    rep = SL.self_learn_tail(model, tok, facts, SL.load_pack(pack),
+                             {"steps": 3, "k_init": 2, "max_rounds": 2, "batch": 8, "replay_batch": 8, "target": 2.0,
+                              "keep_items": 20}, log=lambda *a, **k: None, tag="kurd")
+    assert [r["neurons"] for r in rep["rounds"]] == [2, 4] and rep["new_params"] == 4 * (2 * model.config.d_model + 1)
+    g = SL.tail_block(model).mlp
+    assert isinstance(g, S.GrownMLP) and [c.tag for c in g.chunks] == ["kurd", "kurd"]
+    assert list(S.grown_layers(model)) == [S.mlp_sites(model)[-1][0]]           # только последний слой
+    new_state = model.state_dict()
+    for k, v in old.items():
+        k2 = k if k in new_state else k.replace(".mlp.", ".mlp.base.")
+        assert torch.equal(new_state[k2], v), k
+
+
+def test_near_misses_keep_ending_and_differ():
+    """Похожие несуществующие слова: другая основа, то же окончание (падежная форма выученного слова — не «чужое»)."""
+    import selflearn_tail as SL
+    rng = random.Random(0)
+    for w in ("курдяпа", "бармук", "залкута"):
+        vs = SL.near_misses(w, 6, rng)
+        assert len(vs) == 6 and len(set(vs)) == 6
+        assert all(v != w and len(v) == len(w) and v[-2:] == w[-2:] for v in vs)
+        assert all(sum(a != b for a, b in zip(v, w)) in (1, 2) for v in vs)

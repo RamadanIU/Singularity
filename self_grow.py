@@ -266,19 +266,21 @@ def text_questions(word: str, text: str) -> List[Tuple[str, str]]:
     """
     Инструмент вопросов для свободного текста: общие вопросы о слове + вопросы о признаках, которые нашлись
     в тексте по шаблонам (цвет, место, размер). Ответы на них даёт сама модель, видя текст. Для сложных
-    текстов этот инструмент нужно заменить моделью-«составителем вопросов» (PLAN_MULTIMODULE_RU.md, раздел 2).
+    текстов этот инструмент нужно заменить моделью-«составителем вопросов» (PLAN_MULTIMODULE_RU.md, раздел 1.6).
+    Тот же список вопросов строит страница (textQuestions в slr_net_mobile_chat.html) — тест сверяет их.
     """
     W, w = C.cap(word), word.lower()
     qs = [(f"Что такое {w}?", "что"), (f"Расскажи про слово «{w}».", "что"), (f"{W} — это что?", "что"),
           (f"Что ты знаешь про слово «{w}»?", "что"), (f"Объясни ещё раз, что такое {w}.", "что"),
-          (f"Так что такое {w}?", "что")]
+          (f"Так что такое {w}?", "что"), (f"Ты знаешь, что такое {w}?", "что"), (f"Что значит слово «{w}»?", "что")]
     t = text.lower()
     if COLOR_RE.search(t):
         qs += [(f"Какого цвета {w}?", "цвет"), (f"{W} какого цвета?", "цвет"), (f"А какого цвета {w}?", "цвет")]
     m = PLACE_RE.search(t)
     if m:
         verb = m.group(1)
-        qs += [(f"Где {verb} {w}?", "место"), (f"А где {verb} {w}?", "место"), (f"В каком месте {verb} {w}?", "место")]
+        qs += [(f"Где {verb} {w}?", "место"), (f"А где {verb} {w}?", "место"), (f"В каком месте {verb} {w}?", "место"),
+               (f"Где обычно {verb} {w}?", "место")]
     if re.search(r"\b(маленьк|крошечн|больш|огромн)", t):
         qs += [(f"Какой величины {w}?", "размер"), (f"{W} какой величины?", "размер")]
     return qs
@@ -808,7 +810,7 @@ def cmd_experiment(args: argparse.Namespace) -> None:
                          teacher=args.teacher, kl_coef=args.kl, lr=args.lr, k_init=args.k_init, target=args.target,
                          max_rounds=args.max_rounds, bias_init=args.bias_init, full_lr=args.full_lr,
                          soft_coef=args.soft, keep_target=args.keep_target, check_frac=args.check_frac,
-                         neg_frac=args.neg_frac)
+                         neg_frac=args.neg_frac, sites=args.sites or None, k_max=args.k_max)
         if mode == "fixed":                       # фиксированное число нейронов: один раунд без роста
             cfg.k_init, cfg.max_rounds, cfg.grow_factor = int(k), 1, 1.0
         if mode == "full":
@@ -910,7 +912,7 @@ def main(argv: Optional[List[str]] = None) -> None:
     ap = argparse.ArgumentParser(description="Самодообучение с ростом нейронов")
     sub = ap.add_subparsers(dest="cmd", required=True)
     x = sub.add_parser("experiment", help="опыт: выучить выдуманные слова и проверить без объяснения")
-    x.add_argument("--ckpt", default="slr_net_chat_ru_mini2.npz")
+    x.add_argument("--ckpt", default="slr_net_chat_ru_mini3.npz")
     x.add_argument("--data", default="data/chat")
     x.add_argument("--words", type=int, default=20)
     x.add_argument("--control", type=int, default=20)
@@ -923,6 +925,8 @@ def main(argv: Optional[List[str]] = None) -> None:
     x.add_argument("--check-frac", type=float, default=0.2)
     x.add_argument("--neg-frac", type=float, default=0.5)
     x.add_argument("--max-rounds", type=int, default=6)
+    x.add_argument("--sites", nargs="*", default=None, help="куда добавлять нейроны: decoder.3 — только последний слой")
+    x.add_argument("--k-max", type=int, default=256)
     x.add_argument("--lr", type=float, default=3e-3)
     x.add_argument("--full-lr", type=float, default=3e-4)
     x.add_argument("--kl", type=float, default=1.0)
@@ -936,7 +940,7 @@ def main(argv: Optional[List[str]] = None) -> None:
     x.add_argument("--seed", type=int, default=0)
     x.add_argument("--json", default=None)
     lr_ = sub.add_parser("learn", help="выучить текст: «Слово — это ...» -> модуль знаний")
-    lr_.add_argument("--ckpt", default="slr_net_chat_ru_mini2.npz")
+    lr_.add_argument("--ckpt", default="slr_net_chat_ru_mini3.npz")
     lr_.add_argument("--text", default=None)
     lr_.add_argument("--file", default=None)
     lr_.add_argument("--module", nargs="*", help="уже выученные модули (подключить перед обучением)")
@@ -948,7 +952,7 @@ def main(argv: Optional[List[str]] = None) -> None:
     lr_.add_argument("--lr", type=float, default=3e-3)
     lr_.add_argument("--seed", type=int, default=0)
     c = sub.add_parser("chat", help="диалог с подключёнными модулями знаний")
-    c.add_argument("--ckpt", default="slr_net_chat_ru_mini2.npz")
+    c.add_argument("--ckpt", default="slr_net_chat_ru_mini3.npz")
     c.add_argument("--module", nargs="*")
     c.add_argument("--data", default="data/chat")
     c.add_argument("--steps", type=int, default=150)
